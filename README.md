@@ -2,8 +2,7 @@
 
 ### Overview
 
-This repository contains all the code used to generate the final Seurat
-objects and analyses. This includes:
+This repository contains all the code used in the transcriptomic analysis. This includes:
 
 1.  Merging all samples in a single dataset
 
