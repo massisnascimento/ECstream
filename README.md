@@ -1,4 +1,4 @@
-# Protracted Migration of Immature Neurons in the Temporal Lobe of Young Children
+# Protracted Neuronal Recruitment in the Temporal Lobe of Young Children
 
 ### Overview
 
