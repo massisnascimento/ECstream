@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # History files
 .Rhistory
 .Rapp.history
@@ -57,3 +58,6 @@ po/*~
 
 # RStudio Connect folder
 rsconnect/
+=======
+*.rds
+>>>>>>> 3f714b0e98fe4fc7dbd955c637240fd5bb327c59
