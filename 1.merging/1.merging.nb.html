@@ -11,7 +11,7 @@
 
 <meta name="author" content="Marcos Nascimento" />
 
-<meta name="date" content="2023-12-19" />
+<meta name="date" content="2023-12-20" />
 
 <title>Merging samples</title>
 
@@ -1752,7 +1752,7 @@ display: none;
 <h3 class="subtitle">MANAAB + Franjic // SoupX/DoubletFinder/DropletQC
 Pipeline</h3>
 <h4 class="author">Marcos Nascimento</h4>
-<h4 class="date">2023-12-19</h4>
+<h4 class="date">2023-12-20</h4>
 
 </div>
 
@@ -1760,6 +1760,39 @@ Pipeline</h3>
 <!-- rnb-text-begin -->
 <!-- rnb-text-end -->
 <!-- rnb-chunk-begin -->
+<!-- rnb-source-begin eyJkYXRhIjoiYGBgclxuIyBMb2FkaW5nIG5lY2Vzc2FyeSBsaWJyYXJpZXNcbmxpYnJhcnkodGlkeXZlcnNlKVxubGlicmFyeShTZXVyYXQpXG5saWJyYXJ5KHZpcmlkaXMpXG5saWJyYXJ5KHBhdGNod29yaylcbmxpYnJhcnkoRHJvcGxldFV0aWxzKVxubGlicmFyeShmdXR1cmUpXG5saWJyYXJ5KHRpYmJsZSlcbmxpYnJhcnkoQ29tcGxleEhlYXRtYXApXG5cbiMgQWRkaXRpb25hbCBjb2xvciBzY2FsZXNcbmxpYnJhcnkoTWV0QnJld2VyKVxubGlicmFyeShOYXRQYXJrc1BhbGV0dGVzKVxuXG4jIFBhcmFsbGVsIHByb2Nlc3Npbmcgc2V0dXBcbnBsYW4oXCJtdWx0aWNvcmVcIiwgd29ya2VycyA9IDgwKVxub3B0aW9ucyhmdXR1cmUuZ2xvYmFscy5tYXhTaXplID0gMzAgKiAxMDI0XjMpICMgMzAgR0JcblxuIyBDdXN0b20gdGhlbWVzIGFuZCBzY2FsZXMgZm9yIHBsb3RzXG5teXRoZW1lIDwtIHRoZW1lX21pbmltYWwoKSArIFxuICB0aGVtZShheGlzLmxpbmUgPSBlbGVtZW50X2xpbmUoKSxcbiAgICAgICAgYXhpcy50aWNrcyA9IGVsZW1lbnRfbGluZSgpLFxuICAgICAgICB0ZXh0ID0gZWxlbWVudF90ZXh0KGZhbWlseSA9IFwiSGVsdmV0aWNhXCIpKVxuXG5zaW1wbGUgPC0gTm9BeGVzKCkgKyBOb0xlZ2VuZCgpXG5teXNjIDwtIHNjYWxlX2NvbG9yX3ZpcmlkaXMob3B0aW9uID0gXCJBXCIpXG5yZWdpb24ucGFsIDwtIGMoXCIjNUVCRkEyXCIsIFwiI0Y2OTY2M1wiLCBcIiM3MzFERDhcIiwgIFwiI0ZCN0M3RVwiKVxuXG4jIExpc3Qgb2Ygc2V4LXNwZWNpZmljIGdlbmVzXG5zZXguZ2VuZXMgPC0gYyhcIlRUVFkxNFwiLCBcIk5MR040WVwiLCBcIlVTUDlZXCIsIFwiVVRZXCIsIFwiWElTVFwiLCBcIlJQUzRYXCIsIFwiVE1TQjRYXCIsIFwiVFNJWFwiKVxuXG5gYGAifQ== -->
+<pre class="r"><code># Loading necessary libraries
+library(tidyverse)
+library(Seurat)
+library(viridis)
+library(patchwork)
+library(DropletUtils)
+library(future)
+library(tibble)
+library(ComplexHeatmap)
+
+# Additional color scales
+library(MetBrewer)
+library(NatParksPalettes)
+
+# Parallel processing setup
+plan(&quot;multicore&quot;, workers = 80)
+options(future.globals.maxSize = 30 * 1024^3) # 30 GB
+
+# Custom themes and scales for plots
+mytheme &lt;- theme_minimal() + 
+  theme(axis.line = element_line(),
+        axis.ticks = element_line(),
+        text = element_text(family = &quot;Helvetica&quot;))
+
+simple &lt;- NoAxes() + NoLegend()
+mysc &lt;- scale_color_viridis(option = &quot;A&quot;)
+region.pal &lt;- c(&quot;#5EBFA2&quot;, &quot;#F69663&quot;, &quot;#731DD8&quot;,  &quot;#FB7C7E&quot;)
+
+# List of sex-specific genes
+sex.genes &lt;- c(&quot;TTTY14&quot;, &quot;NLGN4Y&quot;, &quot;USP9Y&quot;, &quot;UTY&quot;, &quot;XIST&quot;, &quot;RPS4X&quot;, &quot;TMSB4X&quot;, &quot;TSIX&quot;)
+</code></pre>
+<!-- rnb-source-end -->
 <!-- rnb-chunk-end -->
 <!-- rnb-text-begin -->
 <p>#Creating seurat objects from count matrices Count matrices are
