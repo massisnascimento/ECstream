@@ -1,0 +1,369 @@
+---
+title: "hdWGCNA"
+author: "Marcos Nascimento"
+date: "`r Sys.Date()`"
+output: html_notebook
+---
+
+# hdWGCNA
+This analysis followed the tutorial by Sam Morabito at https://smorabit.github.io/hdWGCNA/articles/basic_tutorial.html 
+
+## Loading Libraries
+```{r setup}
+# single-cell analysis package
+library(Seurat)
+
+# plotting and data science packages
+library(tidyverse)
+library(cowplot)
+library(patchwork)
+library(viridis)
+library(grDevices)
+library(writexl)
+
+# co-expression network analysis packages:
+library(WGCNA)
+library(hdWGCNA)
+
+# using the cowplot theme for ggplot
+theme_set(theme_cowplot())
+
+# set random seed for reproducibility
+set.seed(12345)
+
+#Variables to keep plots consistent:
+simple = NoAxes() + NoLegend()
+
+mysc = scale_color_viridis(option = "A")
+region.pal = c("#5EBFA2", "#F69663", "#731DD8",  "#FB7C7E")
+
+#Custom functions
+ggsave <- function(..., bg = "white") ggplot2::ggsave(..., bg = bg)
+```
+
+
+## Setup
+```{r}
+inter.exp_step3 = readRDS("../4.monocle/inter.exp_step3.rds")
+
+inter.exp_step3@misc$active_wgcna = NULL
+inter.exp_step3@misc$inter_fraction_0.05 = NULL
+
+inter.exp_step3@active.assay = "RNA"
+inter.exp_step3 = inter.exp_step3 %>% NormalizeData() %>% FindVariableFeatures() 
+
+inter.exp_step3 = inter.exp_step3 %>% SetupForWGCNA(
+  gene_select = "fraction", # the gene selection approach
+  fraction = 0.05, # fraction of cells that a gene needs to be expressed in order to be included
+  wgcna_name = "inter_fraction_0.05" # the name of the hdWGCNA experiment
+)
+
+ncol(inter.exp_step3) #20470 cells
+```
+
+```{r}
+DimPlot(inter.exp_step3, group.by = "all.exp_type") + coord_fixed()
+DimPlot(inter.exp_step3, group.by = "sample") + coord_fixed()
+```
+
+
+## Constructing Metacells
+```{r}
+# construct metacells  in each group
+inter.exp_step3 = inter.exp_step3 %>% MetacellsByGroups(
+  group.by = c("all.exp_type", "sample"), # specify the columns in seurat_obj@meta.data to group by
+  k = 20, # nearest-neighbors parameter
+  max_shared = 10, # maximum number of shared cells between two metacells
+  ident.group = "all.exp_type", # set the Idents of the metacell seurat object
+)
+
+# normalize metacell expression matrix:
+inter.exp_step3 = NormalizeMetacells(inter.exp_step3)
+```
+
+## Process the Metacell Seurat Object
+Optional step, but may be useful since metacells are pseudobulk cells with way less sparsity and noise than the original nuclei
+```{r}
+metacell_objnew <- GetMetacellObject(inter.exp_step3)
+
+inter.exp_step3 <- NormalizeMetacells(inter.exp_step3)
+inter.exp_step3 <- ScaleMetacells(inter.exp_step3, features=VariableFeatures(inter.exp_step3))
+inter.exp_step3 <- RunPCAMetacells(inter.exp_step3, features=VariableFeatures(inter.exp_step3))
+inter.exp_step3 <- RunUMAPMetacells(inter.exp_step3, reduction='pca', dims=1:20)
+
+
+p1 <- DimPlotMetacells(inter.exp_step3, group.by='all.exp_type') + umap_theme() + ggtitle("Cell Type")
+p2 <- DimPlotMetacells(inter.exp_step3, group.by='sample') + umap_theme() + ggtitle("Sample")
+
+p1 | p2
+```
+
+## Co-expression network analysis
+```{r}
+inter.exp_step3 = inter.exp_step3 %>%  SetDatExpr(
+  group_name = c("Cortical Interneurons"), # the name of the group of interest in the group.by column
+  group.by='all.exp_type', # the metadata column containing the cell type info. This same column should have also been used in MetacellsByGroups
+  assay = 'RNA', # using RNA assay
+  slot = 'data' # using normalized data
+)
+```
+
+## Select soft-power threshold
+```{r}
+# Test different soft powers:
+inter.exp_step3 <- TestSoftPowers(
+  inter.exp_step3,
+  networkType = 'signed' # you can also use "unsigned" or "signed hybrid"
+)
+
+# plot the results:
+plot_list <- PlotSoftPowers(inter.exp_step3)
+
+# assemble with patchwork
+wrap_plots(plot_list, ncol=2)
+```
+
+## Construct co-expression network
+```{r}
+# construct co-expression network:
+inter.exp_step3 <- ConstructNetwork(
+  inter.exp_step3, soft_power=3, #select the appropriate soft power determined in the previous code chunk
+  setDatExpr=FALSE,
+  tom_name = 'INTER', # name of the topoligical overlap matrix written to disk
+  overwrite_tom = T 
+)
+
+PlotDendrogram(inter.exp_step3, main='topo_1 hdWGCNA Dendrogram')
+```
+
+## Topological Overlap Matrix (TOM)
+```{r}
+TOM <- GetTOM(inter.exp_step3)
+```
+
+## Compute module eigengenes
+```{r}
+# compute all MEs in the full single-cell dataset
+inter.exp_step3 <- ModuleEigengenes(
+ inter.exp_step3,
+ exclude_grey = T
+)
+```
+## Compute module connectivity
+```{r}
+# compute eigengene-based connectivity (kME):
+inter.exp_step3 <- ModuleConnectivity(
+  inter.exp_step3,
+  group.by = 'all.exp_type', 
+  group_name = 'Cortical Interneurons'
+)
+
+# rename the modules
+inter.exp_step3 <- ResetModuleNames(
+  inter.exp_step3,
+  new_name = "INH-M"
+)
+
+# plot genes ranked by kME for each module
+p <- PlotKMEs(inter.exp_step3, ncol=7, text_size = 4)
+
+for(m in 1:5) {
+  wrap_plots(p[[m]])
+  ggsave(paste0("plots/module-connectivity_M", m, ".png"), width = 4, height = 4, scale = 1)
+}
+```
+## Getting the module assignment table
+```{r}
+# get the module assignment table:
+modules <- GetModules(inter.exp_step3)
+
+# show the first rows:
+head(modules)
+
+# get hub genes
+hub_df <- GetHubGenes(inter.exp_step3, n_hubs = 200)
+
+#Exporting as an excel file:
+hub_df = hub_df %>% mutate(paper_module = module)
+hub_df = hub_df %>% arrange(paper_module, -kME) %>% select(paper_module, gene_name, kME)
+colnames(hub_df) = c("module", "gene", "kME")
+#write_xlsx(hub_df, path = "wgcna_modules_genes.xlsx")
+```
+
+#Saving inter.exp_step4
+```{r}
+inter.exp_step4 = inter.exp_step3
+saveRDS(inter.exp_step4, "inter.exp_step4.rds", compress = F)
+```
+
+
+## Ploting eigengenes
+```{r}
+# make a featureplot of hMEs for each module
+me_plot_list <- ModuleFeaturePlot(
+  inter.exp_step4,
+  features='MEs', # plot the hMEs
+  order=TRUE # order so the points with highest hMEs are on top
+)
+
+# stitch together with patchwork
+me_plot_list #Better
+
+for(m in 1:5) {
+  me_plot_list[[m]] + scale_color_gradient2(low = "grey", mid = "white", high = "red")
+  ggsave(paste0("plots/eigengene_featureplots_M", m, ".png"), width = 4, height = 4, scale = 2)
+}
+```
+
+##Violin Plots
+```{r}
+wgcnadata = merge(inter.exp_step4@meta.data, inter.exp_step4@misc[["inter_fraction_0.05"]][["MEs"]], by = 0) %>% column_to_rownames(var = "Row.names")
+wgcnadata = wgcnadata %>% mutate(`scaled_INH-M1` = scale.default(`INH-M1`))
+wgcnadata = wgcnadata %>% mutate(`scaled_INH-M2` = scale.default(`INH-M2`))
+wgcnadata = wgcnadata %>% mutate(`scaled_INH-M3` = scale.default(`INH-M3`))
+wgcnadata = wgcnadata %>% mutate(`scaled_INH-M4` = scale.default(`INH-M4`))
+wgcnadata = wgcnadata %>% mutate(`scaled_INH-M5` = scale.default(`INH-M5`))
+
+EC_14d_cells = wgcnadata %>% filter(age == "14d" & region == "Postnatal EC") %>% rownames
+stream_14d_cells = wgcnadata %>% filter(age == "14d" & region == "Migratory Stream") %>% rownames
+ge_cells = wgcnadata %>% filter(age == "23GW" & region == "Germinal Zone") %>% rownames
+embryonic_ec_cells = wgcnadata %>% filter(age == "23GW" & region == "Embryonic EC") %>% rownames
+
+wgcnadata = wgcnadata %>%  mutate(plot_ages = paste(age, "EC"))
+wgcnadata[EC_14d_cells, "plot_ages"] = "14d EC"
+wgcnadata[stream_14d_cells, "plot_ages"] = "14d Migratory Stream"
+wgcnadata[ge_cells, "plot_ages"] = "23GW Germinal Zone"
+wgcnadata[embryonic_ec_cells, "plot_ages"] = "23GW EC"
+
+wgcnadata$plot_ages = factor(wgcnadata$plot_ages, levels = c("23GW Germinal Zone", 
+                                                             "23GW EC", "14d Migratory Stream", 
+                                                             "14d EC", "33d EC", 
+                                                             "54d EC", 
+                                                             "2y EC", 
+                                                             "3y EC", 
+                                                             "13y EC", 
+                                                             "27y EC", 
+                                                             "50y EC", 
+                                                             "51y EC", 
+                                                             "79y EC"))
+
+
+INH_mods = paste0("INH-M", seq(1:5))
+
+#plotting vertical versions of the violin plots:
+for( i in 1: length(INH_mods)) {
+wgcnadata %>% 
+  #filter(all.exp_type == "Cortical Interneurons") %>% 
+  ggplot(aes(get(INH_mods[i]), fct_rev(plot_ages), fill = region)) + 
+  geom_violin() +
+  scale_fill_manual(name = "Region", 
+                    values = region.pal) +
+  theme(axis.text.x = element_blank()) + 
+  scale_y_discrete() +
+  labs(y = NULL, 
+       x = NULL) + 
+  theme_minimal() + 
+  theme(axis.line = element_line(), 
+        panel.grid.major.y = element_blank(), 
+        legend.position = "none")
+  
+ggsave(paste0("plots/module", i, "_violinplot.by.ages_vertical.png"), width = 4, height = 8, scale = 1) 
+}
+```
+
+
+```{r}
+wgcna.list = list()
+for(m in INH_mods) {
+  wgcna.list[[m]] = merge(select(wgcnadata, age, region, pseudotime), select(wgcnadata,m), by = 0)
+  colnames(wgcna.list[[m]])[5] = "module"
+}
+
+myplots = list()
+  for(m in INH_mods) {
+     myplots[[m]] = wgcna.list[[m]] %>% 
+                      ggplot(aes(x = pseudotime, y = module)) + 
+                      geom_jitter(aes(col = age), width = 0.5, alpha = 0.5, size = 0.5) + 
+                      scale_color_viridis_d(option = "H") + 
+                      geom_smooth(col = "red") + 
+                      theme_minimal() + 
+                      scale_x_continuous(expand = c(0,0)) +
+                      labs(x = "Pseudotime", y = "Module eigengene") + 
+                      theme(legend.position = "none")
+     wrap_plots(myplots[[m]])
+     ggsave(paste0("plots/wgcna_modules_pseudotime_", m, ".pdf"), width = 4, height = 4, scale = 0.8)
+  }
+
+wrap_plots(myplots, ncol = 7)
+ggsave("wgcna_modules_pseudotime.png", width = 16, height = 2.5, scale = 2)
+
+
+myplots = list()
+  for(m in INH_mods) {
+     myplots[[m]] = wgcna.list[[m]] %>% 
+                      ggplot(aes(x = pseudotime, y = module)) + 
+                      geom_jitter(aes(col = region), width = 0.5, alpha = 0.5, size = 0.5) + 
+                      scale_color_manual(values = region.pal) + 
+                      geom_smooth(col = "red") + 
+                      theme_minimal() + 
+                      scale_x_continuous(expand = c(0,0)) +
+                      labs(x = "Pseudotime", y = "Module eigengene") + 
+                      theme(legend.position = "none")
+     wrap_plots(myplots[[m]])
+     ggsave(paste0("plots/wgcna_modules_pseudotime_byregion_", m, ".pdf"), width = 4, height = 4, scale = 0.8)
+  }
+
+wrap_plots(myplots, ncol = 7)
+ggsave("wgcna_modules_pseudotime_byregion.png", width = 16, height = 2.5, scale = 2)
+```
+
+# Module Trait Correlation
+## Calculating
+```{r}
+# convert age to numeric
+inter.exp_step4$age %>% unique()
+inter.exp_step4@meta.data = inter.exp_step4@meta.data  %>% mutate(age_c = ifelse(age == "23GW", 0.4, 
+                                          ifelse(age == "14d", 0.78,
+                                          ifelse(age == "33d", 0.83,
+                                          ifelse(age == "54d", 0.89,
+                                          ifelse(age == "2y", 2.74,       
+                                          ifelse(age == "3y", 3.74,        
+                                          ifelse(age == "13y", 13.74,
+                                          ifelse(age == "27y", 27.74, 
+                                          ifelse(age == "50y", 50.74,        
+                                          ifelse(age == "51y", 51.74,        
+                                          ifelse(age == "79y", 79.74,
+                                                 "unknown"))))))))))))
+                                          
+
+inter.exp_step4$age_c <- as.numeric(inter.exp_step4$age_c)
+
+# list of traits to correlate
+cur_traits <- c('age_c', 'pseudotime', 'nCount_RNA', 'percent.mt', "nuclear_fraction")
+
+inter.exp_step4 <-ModuleTraitCorrelation(
+  inter.exp_step4,
+  traits = cur_traits
+)
+```
+## Inspecting
+```{r}
+# get the mt-correlation results
+mt_cor <- GetModuleTraitCorrelation(inter.exp_step4)
+mt_cor$cor$all_cells
+mt_cor$fdr$all_cells
+```
+
+
+## Plotting
+```{r}
+ggplot(mt_cor$cor$all_cells %>% as.data.frame() %>% rownames_to_column("variable") %>% pivot_longer(cols = 2:6, names_to = "module") %>% mutate(label = sprintf("%.2f", value)), aes(module, variable, fill = value, label = label)) + 
+  geom_tile() + 
+  geom_text() + 
+  scale_fill_distiller(type = "div", palette = 5, limits = c(-1, 1), name = "Pearson coefficient") + 
+  theme_minimal() + 
+  theme(panel.grid = element_blank()) +
+  labs(x = NULL, y = NULL) + 
+  scale_y_discrete(labels = c("Age", "UMI count", "Nuclear Fraction", "Mitochondrial Fraction", "Pseudotime"))
+```
+

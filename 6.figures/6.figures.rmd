@@ -1,0 +1,927 @@
+---
+title: "Part 5 - Plots"
+author: "Marcos Nascimento"
+format: html
+---
+
+```{r setup}
+library(tidyverse)
+library(Seurat)
+library(ComplexHeatmap)
+library(circlize)
+library(RColorBrewer)
+library(viridis)
+library(patchwork)
+library(MetBrewer)
+library(ggrepel)
+pt = 0.4
+simple = NoAxes() + NoLegend()
+
+#Define some palettes:
+region.pal = c("#5EBFA2", "#F69663", "#731DD8",  "#FB7C7E")
+
+inter_type.pal <- c("#191970", "#708090", "#F4A460", "#6B8E23", 
+                   "#F08080", "#87CEEB", "#4169E1", "#90EE90", 
+                   "#CD5C5C", "#FFD700", "#008B8B", "#FF6347", 
+                   "#800080", "#008080", "#FF8C00", "#FF69B4")
+
+subpallium_type.pal = c("#fc8d59", "#fee090",  "#80cdc1", "#74add1","grey60", "#d73027","#4575b4", "#228B22","grey")
+
+mature_type.pal = c("#556B2F", "#DAA520", "#B22222", "#9370DB", "#48D1CC", "#FF8C00", "#4169E1", "#32CD32", "#FF6347")
+
+lamp5.layers.pal = c("#FF7F0E", "#BF2772", "#4575b4")
+```
+
+#Loading data
+```{r}
+# stream.exp <- readRDS("../ec_stream/stream.exp.v5.rds")
+#all.exp <- readRDS("../2.integration/all.exp.rds)
+inter.exp <- readRDS("../6.wgcna/inter.exp_step4.rds")
+
+lamp5.exp <- readRDS("../5.lamp5/lamp5.exp.rds")
+```
+
+
+# Fig. 4
+b
+```{r}
+DimPlot(stream.exp, label = T, group.by = "cell_type") + 
+  coord_fixed() + 
+  simple + 
+  labs(title = "EC Stream") + 
+  scale_color_manual(values=met.brewer("Cross", 15))
+ggsave("stream.exp_dimplot_celltypes_labeled.png", height = 8, width = 10, units = "in")
+
+DimPlot(stream.exp, label = F, group.by = "cell_type") + 
+  coord_fixed() + 
+  simple + 
+  labs(title = "EC Stream") + 
+  scale_color_manual(values=met.brewer("Cross", 15))
+ggsave("stream.exp_dimplot_celltypes_nolabel.png", height = 8, width = 10, units = "in")
+```
+
+c
+```{r}
+stream.exp@active.assay <- "SCT"
+genes = c("DCX", "TBR1", "SLC17A6", "GAD2", "DLX2", "NR2F2", "PROX1", "LHX6")
+
+for(g in genes) {
+  FeaturePlot(stream.exp, g, order = T, pt.size = pt) & scale_color_viridis_c(option = "A") &
+  coord_fixed() &
+  simple
+
+ggsave(paste0("featureplot_ecstream_", g, ".png"), height = 4, width = 4)
+}
+```
+
+d
+```{r}
+a = ggplot(stream.exp@meta.data %>% filter(cell_type %in% c("Young excitatory neurons", "Young inhibitory neurons")) , aes(orig.ident, fill = cell_type)) + 
+  geom_bar(position = "fill") + 
+  scale_fill_manual(name = "Neuronal Type", labels = c("Excitatory", "Inhibitory"), values = c("#1CB2E3", "#E34D1C")) + 
+  theme_classic() + 
+  theme(panel.grid = element_blank(), 
+        panel.grid.major.y = element_line(color = "grey95"), 
+        axis.text.x = element_blank(), 
+        axis.title.x = element_blank(), 
+        axis.ticks.x = element_blank()) + 
+  scale_y_continuous(expand = c(0,0), labels = scales::percent, name = "Percentage") 
+
+b = ggplot(stream.exp@meta.data %>% filter(cell_type == "Young inhibitory neurons") , aes(orig.ident, fill = SCT_snn_res.0.5)) + 
+  geom_bar(position = "fill") + 
+  scale_fill_manual(name = "Inhibitory Neurons Putative Origin", labels = c("CGE", "MGE"), values = c("#E3B11C", "#E31C4E")) + 
+  theme_classic() + 
+  theme(panel.grid = element_blank(), 
+        panel.grid.major.y = element_line(color = "grey95"), 
+        axis.text.x = element_blank(), 
+        axis.title.x = element_blank(), 
+        axis.ticks.x = element_blank()) + 
+  scale_y_continuous(expand = c(0,0), labels = scales::percent, name = "Percentage") 
+
+a+b & NoLegend()
+ggsave("plots/stream_young.neuron.types_barplot.pdf", width = 44, height = 31, units = "mm", scale = 2.5, dpi = 600)
+```
+
+# Fig. 5
+d
+```{r}
+#Lineages overview
+cds.stream <- readRDS("../ec_stream/stream.neuro_oligo_lineages.monocle.object.rds")
+
+a = plot_cells(cds.stream,
+           color_cells_by = "pseudotime",
+           label_cell_groups=FALSE,
+           label_leaves=FALSE,
+           label_branch_points=FALSE,
+           label_roots = F,
+           trajectory_graph_color = "cyan",
+           trajectory_graph_segment_size = 0.6,
+           graph_label_size=1.5) + 
+  theme(legend.direction = "horizontal", legend.position = "bottom") + 
+            coord_fixed() + 
+            NoAxes() + 
+  scale_color_viridis(name = "Pseudotime", option = "C")
+b = FeaturePlot(stream.exp, "pseudotime") + scale_color_viridis(option = "C", na.value = "grey90") + 
+  coord_fixed() + 
+  simple 
+c = DimPlot(stream.exp, group.by = "neuro_lineage") + 
+  scale_color_manual(values = c("grey90", "#03A400")) + 
+  coord_fixed() + 
+  simple
+d = DimPlot(stream.exp, group.by = "oligo_lineage") + 
+  scale_color_manual(values = c("grey90", "#0047ED")) + 
+  coord_fixed() + 
+  simple
+a+b+c+d+plot_layout(ncol = 4)
+ggsave("stream_lineage_pseudotime.png", width = 7, height = 4, units = "in", scale = 1.5, dpi = 600)
+
+
+
+#Neurogenic lineage
+matrix = stream.exp@assays$RNA@data %>% as.matrix() %>% t() %>% as.data.frame() %>% rownames_to_column(var = "barcode")
+matrix.supp = stream.exp@meta.data[,19:21] %>% rownames_to_column(var = "barcode")
+matrix_full = merge(matrix, matrix.supp, by = "barcode")
+
+genes = c("TNC", "EOMES", "DCX", "TBR1", "SLC17A6")
+
+matrix.subset = matrix_full %>% select(c("neuro_lineage", "oligo_lineage", "pseudotime", genes)) %>% pivot_longer(cols = genes, names_to = "gene")
+
+colors = c("#e69f00",
+           "#009e73",
+           "#0072b2", 
+           "#d55e00",
+           "#cc79a7")
+
+ggplot(matrix.subset %>% filter(neuro_lineage == T), aes(pseudotime, value, color = gene)) +
+  geom_smooth(aes(fill = gene), alpha = 0.25) + 
+  scale_color_manual(values = colors) +
+  scale_fill_manual(values = colors) +
+  mytheme + 
+  theme(panel.grid.minor = element_blank(), panel.grid.major.x = element_blank()) +
+  xlab("Pseudotime") + ylab("Normalized expression") 
+ggsave(("plots/pseudotime_allgenes_neuro.lineage_horizontal.pdf"), width = 1.5, height = 1, units = "in", scale = 3, dpi = 600)
+
+#Oligodendrogenic lineage 
+genes = c("TNC", "EGFR", "OLIG2", "SOX10", "MBP")
+
+matrix.subset = matrix_full %>% select(c("oligo_lineage", "pseudotime", genes)) %>% pivot_longer(cols = genes, names_to = "gene")
+
+ggplot(matrix.subset %>% filter(oligo_lineage == T), aes(pseudotime, value, color = gene)) +
+  geom_smooth(aes(fill = gene), alpha = 0.25) + 
+  scale_color_manual(values = colors) +
+  scale_fill_manual(values = colors) +
+  mytheme + 
+  theme(panel.grid.minor = element_blank(), panel.grid.major.x = element_blank()) +
+  xlab("Pseudotime") + ylab("Normalized expression") 
+ggsave(("plots/pseudotime_allgenes_oligo.lineage_horizontal.pdf"), width = 1.5, height = 1, units = "in", scale = 3, dpi = 600)
+```
+
+
+# Fig. 6
+b
+```{r}
+DimPlot(inter.exp, 
+        group.by = "region", 
+       label = F, 
+        shuffle = T) + 
+  coord_fixed() + 
+  simple +
+  scale_color_manual(values = region.pal) +
+  labs(title = "Sample Origin") 
+ggsave("plots/inter.exp_origin.png", height = 4, width = 4)
+```
+
+c
+```{r}
+DimPlot(inter.exp_predicted, group.by = "subpallium_type",  label = F, shuffle = T) + 
+  coord_fixed() + 
+  simple +
+  scale_color_manual(values = subpallium_type.pal, na.value = "grey90") +
+  labs(title = "Subpallial Lineages") 
+ggsave("plots/inter.exp_subpallialorigin.png", height = 4, width = 4)
+```
+
+d
+```{r}
+DimPlot(inter.exp, label = F, group.by = "age", shuffle = T,  pt.size = pt) + 
+  coord_fixed() + 
+  simple + 
+  scale_color_viridis_d(option = "H") + 
+  labs(title = "Donor Age")
+ggsave("plots/inter.exp_age.png", height = 4, width = 4)
+```
+
+e
+```{r}
+DimPlot(inter.exp_predicted, group.by = "mature_type",  label = F, shuffle = T) + 
+  coord_fixed() + 
+  NoAxes() + 
+  scale_color_manual(values = mature_type.pal, na.value = "grey90") +
+  labs(title = "Mature Identities") 
+ggsave("plots/inter.exp_intertype_withlegend.png", height = 4, width = 4)
+
+DimPlot(inter.exp_predicted, group.by = "mature_type",  label = F, shuffle = T) + 
+  coord_fixed() + 
+  simple + 
+  scale_color_manual(values = mature_type.pal, na.value = "grey90") +
+  labs(title = "Mature Identities") 
+ggsave("plots/inter.exp_intertype.png", height = 4, width = 4)
+```
+
+f
+```{r}
+degenes = readRDS("../3.label_transfer/inter.exp_markers_by_intertype.rds")
+
+top <- 20
+cluster_levels <- inter.exp$inter_type %>% levels() 
+ncls <- cluster_levels %>% length()
+protein_coding_genes <- read_csv("../5.lamp5/protein_coding_genes.txt") %>% pull(`Gene name`)
+
+markers <- c()
+for(i in 1:ncls) {
+cluster.genes =  degenes %>% 
+                      filter(cluster == cluster_levels[i] &
+                             gene %in% protein_coding_genes &
+                             pct.1 > 0.5 
+                             #pct.2 < 0.5
+                             ) %>% 
+                      pull(gene)
+
+cluster.genes = cluster.genes[!cluster.genes %in% markers]
+markers = c(markers, cluster.genes[1:top])
+}
+markers
+n.cells = 1300 #number of cells in the heatmap
+
+heatmap.cells = c()
+for(l in cluster_levels) {
+  heatmap.cells = c(heatmap.cells,
+                    sample(colnames(inter.exp)[which(inter.exp$inter_type == l)], floor(n.cells/ncls)))
+}
+
+metadata = inter.exp@meta.data[heatmap.cells, c("inter_type", "region", "age_group")]
+
+
+data = inter.exp@assays$RNA@scale.data[markers,heatmap.cells] %>% t()
+
+max = 2
+col_fun = colorRamp2(seq(-1*max, max, max/5), rev(brewer.pal(11, "RdBu")))
+
+age_colors = viridis::turbo(n = 11)
+names(age_colors) = levels(metadata$age)
+
+agegroup_colors = viridis::turbo(n = 5)
+names(agegroup_colors) = levels(metadata$age_group)
+names(region.pal) = c("Germinal Zone", "Embryonic EC", "Migratory Stream", "Postnatal EC")
+
+cluster_annotation = rowAnnotation(Origin = metadata$region,
+                                   #`Age Group` = metadata$age_group, 
+                                    col = list(Origin = region.pal#,
+                                               #age = age_colors
+                                               #`Age Group` = agegroup_colors
+                                               ),
+                                   annotation_name_rot = 45,
+                                   annotation_name_gp = gpar(fontface = "bold"),
+                                   gap = unit(1.5, "mm"))
+
+ht_opt$ROW_ANNO_PADDING = unit(1.5, "mm")
+
+hm = Heatmap(data,
+        name = "Z-score",
+        cluster_rows = F,
+        cluster_row_slices = F,
+        column_order = markers,
+        col = col_fun,
+        row_title_rot = 0,
+        show_row_names = F, 
+        show_row_dend = F,
+        show_column_dend = F,
+        row_split = metadata$inter_type,
+        column_split = sort(rep(1:ncls, top)),
+        column_title = NULL,
+        #column_names_rot = 45,
+        right_annotation = cluster_annotation,
+        show_parent_dend_line = T,
+        row_gap = unit(0, "mm"), 
+        column_gap = unit(0, "mm"), 
+        border = T,
+        #column_names_rot = 45,
+        column_names_gp = gpar(fontface = "italic")
+        )
+scale = 6
+png("plots/interneuron.heatmap_2.png", width = 165*scale, height = 36*scale, units = "mm", res = 300)
+hm
+dev.off()
+
+#save as a 2200 x 450 px png file
+
+# inter.exp@active.assay = "RNA"
+# inter.exp = inter.exp %>% NormalizeData() %>% ScaleData(features = rownames(inter.exp))
+```
+
+g (top)
+```{r}
+umap.coords = inter.exp@reductions$umap@cell.embeddings
+cells.meta = inter.exp@meta.data
+data = cbind(umap.coords, cells.meta)
+pt = 0.3
+
+b = ggplot(data, aes(umap14_1, umap14_2)) + 
+    geom_point(color = "grey90", size = pt) +
+    geom_point(data = data %>% filter(!is.na(CGE.VIP_lin)), aes(col = pseudotime), size = 0.8) +
+    scale_color_viridis() + 
+    theme_void() + 
+    coord_fixed() + 
+    labs(title = "CGE-VIP Lineage") + 
+    NoLegend()
+
+c = ggplot(data, aes(umap14_1, umap14_2)) + 
+    geom_point(color = "grey90", size = pt) +
+    geom_point(data = data %>% filter(!is.na(CGE.LAMP5_lin)), aes(color = pseudotime), size = pt) +
+    scale_color_viridis() +
+    theme_void() + 
+    coord_fixed() + 
+    labs(title = "CGE-LAMP5 Lineage") + 
+    NoLegend()
+
+d = ggplot(data, aes(umap14_1, umap14_2)) + 
+    geom_point(color = "grey90", size = pt) +
+    geom_point(data = data %>% filter(!is.na(`MGE.LAMP5_lin`)), aes(color = pseudotime), size = pt) +
+    scale_color_viridis() +
+    theme_void() + 
+    coord_fixed() + 
+    labs(title = "MGE-LAMP5 Lineage") + 
+    NoLegend()
+
+e = ggplot(data, aes(umap14_1, umap14_2)) + 
+    geom_point(color = "grey90", size = pt) +
+    geom_point(data = data %>% filter(!is.na(`MGE.CHAND_lin`)), aes(color = pseudotime), size = pt) +
+    scale_color_viridis() +
+    theme_void() + 
+    coord_fixed() + 
+    labs(title = "MGE-Chandelier Lineage") + 
+    NoLegend()
+
+f = ggplot(data, aes(umap14_1, umap14_2)) + 
+    geom_point(color = "grey90", size = pt) +
+    geom_point(data = data %>% filter(!is.na(`MGE.PVALB_lin`)), aes(color = pseudotime), size = pt) +
+    scale_color_viridis() +
+    theme_void() + 
+    coord_fixed() + 
+    labs(title = "MGE-SST Lineage") + 
+    NoLegend()
+
+g = ggplot(data, aes(umap14_1, umap14_2)) + 
+    geom_point(color = "grey90", size = pt) +
+    geom_point(data = data %>% filter(!is.na(`MGE.SST_lin`)), aes(color = pseudotime), size = pt) +
+    scale_color_viridis() +
+    theme_void() + 
+    coord_fixed() + 
+    labs(title = "MGE-SST Lineage") + 
+    NoLegend()
+
+
+
+(b+c+d+e+f+g & theme(plot.title = element_text(family = "Arial", face = "bold", hjust = 0.5))) + plot_layout(nrow = 1)
+
+ggsave("plots/inter.exp_pseudotime_lineages_geompoint.png", width = 16, height = 3, scale = 1.5)
+```
+
+g (bottom)
+```{r}
+n.bin = 12
+he <- 1.2
+wi <- 2.6
+
+g = ggplot(inter.exp@meta.data %>% filter(CGE.VIP_lin == "CGE-VIP/SNCG/PAX6"), aes(pseudotime, fill = fct_rev(region))) + 
+    geom_histogram(bins = n.bin, position = "fill") + 
+    scale_fill_manual(values = rev(region.pal)) +
+    scale_y_continuous(expand = c(0,0), name = NULL, n.breaks = 3) +
+    scale_x_continuous(expand = c(0,0), name = NULL, n.breaks = 3) +
+    theme(axis.text = element_blank()) + 
+    labs(title = NULL)
+g + NoLegend() 
+ggsave("plots/inter.exp_pseudotime_lineagecomposition_vip.pdf", width = wi, height = he, dpi = 600)
+
+h = ggplot(inter.exp@meta.data %>% filter(CGE.LAMP5_lin == "CGE-LAMP5"), aes(pseudotime, fill = fct_rev(region))) + 
+    geom_histogram(bins = n.bin, position = "fill") + 
+    scale_fill_manual(values = rev(region.pal)) +
+    scale_y_continuous(expand = c(0,0), name = NULL, n.breaks = 3) +
+    scale_x_continuous(expand = c(0,0), name = NULL, n.breaks = 3) +
+    theme(axis.text = element_blank()) + 
+    labs(title = NULL) 
+h + NoLegend()
+ggsave("plots/inter.exp_pseudotime_lineagecomposition_lamp5.pdf", width = wi, height = he, dpi = 600)
+
+i = ggplot(inter.exp@meta.data %>% filter(MGE.LAMP5_lin == "MGE-LAMP5"), aes(pseudotime, fill = fct_rev(region))) +
+    geom_histogram(bins = n.bin, position = "fill") + 
+    scale_fill_manual(values = rev(region.pal)) +
+    scale_y_continuous(expand = c(0,0), name = NULL, n.breaks = 3) +
+    scale_x_continuous(expand = c(0,0), name = NULL, n.breaks = 3) +
+    theme(axis.text = element_blank()) + 
+    labs(title = NULL) 
+i + NoLegend()
+ggsave("plots/inter.exp_pseudotime_lineagecomposition_lamp5lhx6.pdf", width = wi, height = he, dpi = 600)
+
+j = ggplot(inter.exp@meta.data %>% filter(MGE.CHAND_lin == "MGE-Chandelier"), aes(pseudotime, fill = fct_rev(region))) +
+    geom_histogram(bins = n.bin, position = "fill") + 
+    scale_fill_manual(values = rev(region.pal)) +
+    scale_y_continuous(expand = c(0,0), name = NULL, n.breaks = 3) +
+    scale_x_continuous(expand = c(0,0), name = NULL, n.breaks = 3) +
+    theme(axis.text = element_blank()) + 
+    labs(title = NULL) 
+j + NoLegend()
+ggsave("plots/inter.exp_pseudotime_lineagecomposition_chand.pdf", width = wi, height = he, dpi = 600)
+
+k = ggplot(inter.exp@meta.data %>% filter(MGE.SST_lin == "MGE-SST"), aes(pseudotime, fill = fct_rev(region)))+
+    geom_histogram(bins = n.bin, position = "fill") + 
+    scale_fill_manual(values = rev(region.pal)) +
+    scale_y_continuous(expand = c(0,0), name = NULL, n.breaks = 3) +
+    scale_x_continuous(expand = c(0,0), name = NULL, n.breaks = 3) +
+    theme(axis.text = element_blank()) + 
+    labs(title = NULL) 
+k + NoLegend()
+ggsave("plots/inter.exp_pseudotime_lineagecomposition_sst.pdf", width = wi, height = he, dpi = 600)
+
+l = ggplot(inter.exp@meta.data %>% filter(MGE.PVALB_lin == "MGE-PVALB"), aes(pseudotime, fill = fct_rev(region)))+
+    geom_histogram(bins = n.bin, position = "fill") + 
+    scale_fill_manual(values = rev(region.pal)) +
+    scale_y_continuous(expand = c(0,0), name = NULL, n.breaks = 3) +
+    scale_x_continuous(expand = c(0,0), name = NULL, n.breaks = 3) +
+    theme(axis.text = element_blank()) + 
+    labs(title = NULL) 
+l + NoLegend()
+ggsave("plots/inter.exp_pseudotime_lineagecomposition_pvalb.pdf", width = wi, height = he, dpi = 600)
+
+
+(g+h+i+j+k+l & theme(plot.title = element_text(family = "Arial", hjust = 0.5), legend.position = "none")) + plot_layout(nrow = 1)
+ggsave("plots/inter.exp_pseudotime_lineagecomposition.pdf", width = 16, height = 1.75, dpi = 600)
+```
+
+h 
+```{r}
+umap.coords = inter.exp@reductions$umap@cell.embeddings
+cells.meta = inter.exp@meta.data
+data = cbind(umap.coords, cells.meta)
+
+ec.stream.lineage.data = data %>% filter(sample == "EC Stream") %>% select(ends_with("_lin"))
+
+extract_single_non_na <- function(row) {
+  non_na_values <- row[!is.na(row)]
+  if (length(non_na_values) == 1) {
+    return(non_na_values)
+  } else {
+    return(NA)
+  }
+}
+
+# Apply the function to each row
+ec.stream.lineage.data$lineage <- apply(ec.stream.lineage.data, 1, extract_single_non_na)
+lineage.order = ec.stream.lineage.data%>% group_by(lineage) %>% summarize(n = n())  %>% drop_na() %>% arrange(-n) %>% pull(lineage)
+ec.stream.lineage.data$lineage[is.na(ec.stream.lineage.data$lineage)] = "Overlapping Trajectories"
+ec.stream.lineage.data$lineage = factor(ec.stream.lineage.data$lineage, levels = c(lineage.order, "Overlapping Trajectories"))
+
+
+ec.stream.lineage.data %>% 
+  ggplot(aes(x = "a", fill = lineage)) + 
+  geom_bar() + 
+  scale_y_continuous(expand = c(0,0), n.breaks = 3) + 
+  scale_fill_manual(name = "Lineage", 
+                    values = c("#9370DB",  "#556B2F", "#48D1CC",  "#4169E1",  "#32CD32", "#FF8C00","grey85")) + 
+  labs(y = "Count") + 
+  theme_classic() +
+  theme(axis.title.x = element_blank(), 
+        axis.text.x = element_blank(), 
+        axis.ticks.x = element_blank()) 
+  
+ggsave("plots/ecstream_lineage_composition.pdf", width = 4, height = 4.5)
+```
+
+i
+```{r}
+inter.exp@meta.data = inter.exp@meta.data %>% 
+                                    merge(lamp5.exp@meta.data %>% select(inter_type2), by = 0, all.x = T) %>% 
+                                    column_to_rownames("Row.names") 
+
+DimPlot(inter.exp, group.by = "inter_type2", shuffle = T) + scale_color_manual(values = lamp5.layers.pal, na.value = "grey90") + simple + coord_fixed()
+
+ggsave("plots/inter.exp_lamp5_layers.png")
+```
+
+j
+```{r, fig.height=2.4, fig.width=3}
+qlf <- readRDS("../5.lamp5/lamp5.exp_intertype2_pseudobulk_degenes.rds")
+
+labeled.genes = c("COL5A2", "NDNF", "RELN", "ROBO1", "CDH9", "RASGRF2", "CDH13", "CCK", "PRELID2", "PKP2")
+
+volcano.data = qlf[[2]]$table %>% rownames_to_column("gene") %>% 
+                                  mutate(logPValue = -log10(PValue),
+                                         label = ifelse(gene %in% labeled.genes, gene, NA),
+                                         layer = ifelse(logFC > 1 & logPValue > 2, "upper", 
+                                                 ifelse(logFC < -1 & logPValue > 2, "deeper", "not_significant")))
+
+volcano.data %>% 
+  ggplot(aes(logFC, logPValue, label = label, col = layer)) + 
+    geom_point(alpha = 0.7, size = 1) + 
+    scale_color_manual(values = c("#BF2772", "grey85", "#4575b4"), name = NULL, labels = c("Upregulated in deeper layer LAMP5+ neurons",
+                                                                                           "Not significant",
+                                                                                 "Upregulated in upper layer LAMP5+ neurons")) +
+    geom_text_repel(col = "black", fontface = 'italic',  max.overlaps = 10, force_pull = 0.01, force = 50, min.segment.length = 0.01 #, xlim = c(-5, 5), ylim = c(0, 120)
+                    ) + 
+    labs(x = "log2 Fold Change", y = "-log10 P-value") + 
+    xlim(c(-6, 6)) +
+    theme_classic() + 
+    NoLegend()
+ggsave("plots/lamp5.layergenes_volcanoplot.pdf", width = 3, height = 2.4, dpi = 600)
+```
+
+k
+```{r}
+score.data = lamp5.exp@meta.data %>% mutate(order = sample(nrow(.))) %>% arrange(order)
+
+score.data %>% filter(is.na(stream_highlight)) %>% 
+  ggplot(aes(lamp5.3_score, lamp5.1_score)) + 
+  geom_point(col = "grey", alpha = 0.7, size = 0.3) +
+  geom_density_2d(col = "black", alpha = 0.4, bins = 10) + 
+  geom_point(data = score.data %>% filter(stream_highlight == "EC Stream"), col = region.pal[3], alpha = 0.7, size = 0.3) +
+  theme_classic() +
+  scale_color_manual(values = region.pal[3], name = NULL, na.value = "grey75") + 
+  labs(x = NULL, 
+       y = NULL) + 
+  scale_x_continuous(limits = c(NA,1), breaks = c(0, 0.5, 1)) +
+  scale_y_continuous(limits = c(NA,1), breaks = c(0, 0.5, 1)) +
+  NoLegend()
+ggsave("plots/upper_lower_density_plotby_ecstreamcells.pdf", width = 1, height = 0.8, scale = 2.2)
+```
+
+
+# Extended Data Fig.10
+## A-G
+```{r}
+s = 2
+
+DimPlot(all.exp, raster = F, label = F, repel = T, group.by = "all.exp_type", shuffle = T) +
+  coord_fixed() +
+  simple + 
+  scale_color_manual(values = met.brewer("Juarez", length(unique(all.exp$all.exp_type)))) + 
+  labs(title = "Cell Types")
+ggsave("plots/all.exp_celltype.png", height = 4, width = 4, scale = s)
+
+DimPlot(all.exp, raster = F, label = T, group.by = "RNA_snn_res.0.8", shuffle = T) + 
+  coord_fixed() + 
+  simple+
+  scale_color_manual(values = met.brewer("VanGogh2", n = 50, override.order = T))
+ggsave("plots/all.exp_cluster.png", height = 4, width = 4, scale = s)
+
+DimPlot(all.exp, raster = F, label = F, group.by = "age", shuffle = T) + 
+  coord_fixed() + 
+  simple + 
+  scale_color_viridis_d(option = "H", name = "Donor Age")
+ggsave("plots/all.exp_age.png", height = 4, width = 4, scale = s)
+
+DimPlot(all.exp, raster = F, label = F, group.by = "age_group", shuffle = T) + 
+  coord_fixed() + 
+  simple + 
+  scale_color_manual(values=met.brewer("Hokusai3"), name = "Donor Age Group")
+ggsave("plots/all.exp_agegroup.png", height = 4, width = 4, scale = s)
+
+DimPlot(all.exp, raster = F, label = F, group.by = "sample", shuffle = T) + 
+  coord_fixed() + 
+  simple +
+  scale_color_manual(values=met.brewer("Juarez", 16), name = "Sample")
+ggsave("plots/all.exp_sample.png", height = 4, width = 4, scale = s)
+
+DimPlot(all.exp, raster = F, label = F, group.by = "region", shuffle = T) + 
+  coord_fixed() + 
+  simple +
+  scale_color_manual(name = "Region", values = region.pal)
+ggsave("plots/all.exp_region.png", height = 4, width = 4, scale = s)
+
+DimPlot(all.exp, group.by = "stream_highlight", order = T, raster = F) + 
+  scale_color_manual(values = (region.pal)[3], na.value = "grey85", labels = c("EC Stream (14d)", "Other cells")) +
+  coord_fixed() +
+  simple
+ggsave("plots/all.exp_ecstream.png", height = 4, width = 4, scale = s)
+
+FeaturePlot(all.exp, "nuclear_fraction", order = T, raster = F) +
+  scale_color_viridis(limits = c(0, 1), name = "Nuclear Fraction") +
+  coord_fixed() +
+  simple +
+  labs(title = "Intronic Reads")
+ggsave("plots/all.exp_nuclearfraction.png", height = 4, width = 4, scale = s)
+```
+
+
+
+## H: Heatmap
+```{r}
+top <- 8
+cluster_levels <- all.exp$all.exp_type %>% levels() 
+ncls <- cluster_levels %>% length()
+protein_coding_genes <- read_csv("../1.integration/protein_coding_genes.txt") %>% pull(`Gene name`)
+
+markers <- c()
+for(i in 1:ncls) {
+cluster.genes =  all.exp.markers_bycelltype %>% 
+                      filter(cluster == cluster_levels[i] &
+                             gene %in% protein_coding_genes# &
+                             #pct.1 > 0.5  
+                             #pct.2 < 0.3
+                             ) %>% 
+                      pull(gene)
+
+cluster.genes = cluster.genes[!cluster.genes %in% markers]
+markers = c(markers, cluster.genes[1:top])
+}
+markers
+n.cells = 2000 #number of cells in the heatmap
+
+heatmap.cells = c()
+for(l in cluster_levels) {
+  heatmap.cells = c(heatmap.cells,
+                    sample(colnames(all.exp)[which(all.exp$all.exp_type == l)], floor(n.cells/ncls)))
+}
+
+metadata = all.exp@meta.data[heatmap.cells, c("all.exp_type", "region", "age_group", "RNA_snn_res.0.8")]
+
+
+data = all.exp@assays$RNA@scale.data[markers,heatmap.cells] %>% t()
+
+max = 2
+col_fun = colorRamp2(seq(-1*max, max, max/5), rev(brewer.pal(11, "RdBu")))
+
+age_colors = viridis::turbo(n = 11)
+names(age_colors) = levels(metadata$age)
+
+agegroup_colors = viridis::turbo(n = 5)
+names(agegroup_colors) = levels(metadata$age_group)
+names(region.pal) = c("Germinal Zone", "Embryonic EC", "Migratory Stream", "Postnatal EC")
+
+cluster_annotation = rowAnnotation(Region = metadata$region,
+                                   `Age Group` = metadata$age_group, 
+                                    col = list(Region = region.pal,
+                                               #age = age_colors
+                                               `Age Group` = agegroup_colors),
+                                   annotation_name_rot = 45,
+                                   annotation_name_gp = gpar(fontface = "bold"),
+                                   gap = unit(1.5, "mm"))
+
+ht_opt$ROW_ANNO_PADDING = unit(1.5, "mm")
+
+hm = Heatmap(data,
+        name = "Z-score",
+        cluster_rows = F,
+        cluster_row_slices = F,
+        column_order = markers,
+        # cluster_column_slices = F,
+        # cluster_columns = F,
+        col = col_fun,
+        row_title_rot = 0,
+        show_row_names = F,
+        show_row_dend = F,
+        show_column_dend = F,
+        row_split = metadata$all.exp_type,
+        column_split = sort(rep(1:ncls, top)),
+        column_title = NULL,
+        #column_names_rot = 45,
+        right_annotation = cluster_annotation,
+        show_parent_dend_line = T,
+        row_gap = unit(0, "mm"), 
+        column_gap = unit(0, "mm"), 
+        border = T,
+        column_names_rot = 45,
+        column_names_gp = gpar(fontface = "italic")
+        )
+
+hm
+```
+
+# Extended Data Fig.11
+
+
+## A-D: Dim Plots
+```{r}
+#Clusters
+DimPlot(inter.exp,  label = T, group.by = "RNA_snn_res.0.5", pt.size = pt) + 
+  scale_color_manual(values = met.brewer("VanGogh2", length(levels(inter.exp$RNA_snn_res.0.5)))) + 
+  NoAxes() + 
+  coord_fixed()
+ggsave("plots/inter.exp_cluster_legend.png", height = 4, width = 4)
+
+DimPlot(inter.exp,  label = F, group.by = "RNA_snn_res.0.5", pt.size = pt) + 
+  scale_color_manual(values = met.brewer("VanGogh2", length(levels(inter.exp$RNA_snn_res.0.5)))) + 
+  simple + 
+  coord_fixed()
+ggsave("plots/inter.exp_cluster_nolegend.png", height = 4, width = 4)
+
+##Samples
+DimPlot(inter.exp, label = F, group.by = "sample", shuffle = T,  pt.size = pt) + 
+  coord_fixed() + 
+  simple +
+  scale_color_manual(values=met.brewer("Juarez", 16))  + 
+  labs(title = "Samples")
+ggsave("plots/inter.exp_samples_nolegend.png", height = 4, width = 4)
+
+DimPlot(inter.exp, label = F, group.by = "sample", shuffle = T,  pt.size = pt) + 
+  coord_fixed() + 
+  NoAxes() +
+  scale_color_manual(values=met.brewer("Juarez", 16), name = "Sample")  + 
+  labs(title = "Samples")
+ggsave("plots/inter.exp_samples_legend.png", height = 4, width = 4)
+
+#EC stream cells
+DimPlot(inter.exp, group.by = "stream_highlight",  order = T, pt.size = pt) + 
+  scale_color_manual(values = (region.pal)[3], na.value = "grey90", labels = c("EC Stream (14d)", "Other cells")) +
+  coord_fixed() +
+  NoAxes() + 
+  labs(title = "EC Stream Cells")
+ggsave("plots/inter.exp_ecstream_highlight_legend.png", height = 4, width = 4)
+
+DimPlot(inter.exp, group.by = "stream_highlight",  order = T, pt.size = pt) + 
+   scale_color_manual(values = (region.pal)[3], na.value = "grey90", labels = c("EC Stream (14d)", "Other cells")) +
+  coord_fixed() +
+  simple + 
+  labs(title = "EC Stream Cells")
+ggsave("plots/inter.exp_ecstream_highlight_nolegend.png", height = 4, width = 4)
+
+#Embryonic EC cells
+DimPlot(inter.exp, group.by = "dec_highlight",  order = T, pt.size = pt) + 
+   scale_color_manual(values = (region.pal)[2], na.value = "grey90", labels = c("Other cells", "Embryonic EC (23GW)")) +
+  coord_fixed() +
+  NoAxes() + 
+  labs(title = "Embryonic EC Cells")
+ggsave("plots/inter.exp_embryonicec_highlight_legend.png", height = 4, width = 4)
+
+DimPlot(inter.exp, group.by = "dec_highlight",  order = T, pt.size = pt) + 
+   scale_color_manual(values = (region.pal)[2], na.value = "grey90", labels = c("Other cells", "Embryonic EC (23GW)")) +
+  coord_fixed() +
+  simple + 
+  labs(title = "Embryonic EC Cells")
+ggsave("plots/inter.exp_embryonicec_highlight_nolegend.png", height = 4, width = 4)
+```
+## F: Heatmap
+```{r}
+inter.exp@active.assay = "RNA"
+Idents(inter.exp) = "RNA_snn_res.0.5"
+inter.exp <- BuildClusterTree(inter.exp, assay = "RNA", dims = 1:8, reorder = T, features = inter.exp@assays$RNA@var.features)
+
+inter.exp@meta.data$RNA_snn_res.0.5 = factor(inter.exp@meta.data$RNA_snn_res.0.5 , levels = inter.exp@tools$BuildClusterTree$tip.label)
+levels(inter.exp$RNA_snn_res.0.5)
+
+inter.exp_markers_bycluster = FindAllMarkers(inter.exp, assay = "RNA", only.pos = T)
+saveRDS(inter.exp_markers_bycluster, "inter.exp_markers_bycluster.rds")
+
+heatmap.genes <-  c()
+for (c in levels(inter.exp$RNA_snn_res.0.5)) {
+  current.genes <- inter.exp_markers_bycluster %>% filter(pct.1 > 0.7 & 
+                                                            cluster == c & 
+                                                            !(grepl("^MT-", gene))) %>% pull(gene)
+  heatmap.genes <- c(heatmap.genes, current.genes[1:5])
+}
+
+Idents(inter.exp) = "RNA_snn_res.0.5"
+DoHeatmap(inter.exp, 
+          features = heatmap.genes, 
+          assay = "RNA", 
+          group.colors = met.brewer("VanGogh2", length(levels(inter.exp$RNA_snn_res.0.5))), 
+          angle = 0, 
+          hjust = 0.5) +
+  scale_fill_distiller(type = "div", palette = "RdBu", na.value = "white", #limits = c(-2.5, 2.5)
+                       ) + 
+  theme(legend.position = "bottom")
+
+ggsave("plots/inter.exp_heatmap.png", width = 20, height = 14)
+
+```
+
+## G: FeaturePlots
+```{r}
+#Feature Plots
+inter.exp@active.assay = "RNA"
+
+extended.data.fig.11.genes = c("TOP2A", "DCX", "SOX4", "SOX11", "GABRB2", "CCK", "CHRNA7", "CALB2", "NPY", "PROX1", "SP8", "LHX6", "NR2F2", "SOX6", "SCGN", "NDNF", "RELN", "CCK", "CHRNA7", "GAD2", "SNAP25", "VAMP2", "SYT1")
+
+for (g in extended.data.fig.11.genes) {
+  FeaturePlot(inter.exp, g, order = T, cols = magma(100),  pt.size = pt) + 
+  coord_fixed() + 
+  simple
+ggsave(paste0("plots/inter.exp_", g, ".png"), height = 4, width = 4)
+}
+```
+
+
+# Extended Data Fig. 13
+## A-F Dimplots
+```{r}
+p1 <- DimPlot(lamp5.exp,  group.by = "region", shuffle = T) + scale_color_manual(values = region.pal) 
+p2 <- DimPlot(lamp5.exp,  group.by = "age", shuffle = T) + scale_color_viridis_d(option = "H")
+p3 <- DimPlot(lamp5.exp,  group.by = "spatialref.predicted.id_L3", shuffle = T)
+p4 <- DimPlot(lamp5.exp,  group.by = "RNA_snn_res.0.5", shuffle = T) + scale_color_manual(values = c("#BD3106",   "#DA730E", "#E28D0E", "#CCAC07", "#7C8410", "#B3C6B1", "#ACC3C6", "#8DA9BC", "#697BA2"))
+p5 <- DimPlot(lamp5.exp,  group.by = "inter_type", shuffle = T) + scale_color_manual(values = c("#FF7F0E", "#9467BD"))
+p6 <- DimPlot(lamp5.exp,  group.by = "inter_type2", shuffle = T) + scale_color_manual(values = lamp5.layers.pal)
+
+lamp5.exp_plots = list(p1, p2, p3, p4, p5, p6)
+wrap_plots(lamp5.exp_plots) & 
+  NoAxes() & 
+  coord_fixed()
+ggsave("plots/lamp5.exp_overviewplots_w.legends.pdf", width = 11, height = 8.5)
+
+for(p in 1:length(lamp5.exp_plots)) {
+  lamp5.exp_plots[[p]] + coord_fixed() + simple + labs(title = NULL)
+  ggsave(paste0("plots/lamp5.exp_overviewplot_", p, ".png"), width = 4, height = 4)
+}
+```
+
+## G: Module Scores
+```{r}
+FeaturePlot(lamp5.exp, "lamp5.1_score", order = T, cols = brewer.pal(9, "Blues")) & coord_fixed() & NoAxes() & labs(title = NULL)
+ggsave("plots/lamp5.1_score.pdf",  width = 4, height = 4)
+
+FeaturePlot(lamp5.exp, "lamp5.3_score", order = T, cols = brewer.pal(9, "Reds")) & coord_fixed() & NoAxes() & labs(title = NULL)
+ggsave("plots/lamp5.3_score.pdf",  width = 4, height = 4)
+```
+
+## H
+```{r}
+score.data %>% ggplot(aes(lamp5.3_score, lamp5.1_score)) + 
+  geom_point(aes(col = inter_type2), alpha = 0.5, size = 0.3) + 
+  geom_density_2d(col = "black", alpha = 0.7, bins = 10) + 
+  theme_classic() +
+  scale_color_manual(values = lamp5.layers.pal, name = NULL) + 
+  labs(x = NULL, 
+       y = NULL) + 
+  scale_x_continuous(limits = c(NA,1), breaks = c(0, 0.5, 1)) +
+  scale_y_continuous(limits = c(NA,1), breaks = c(0, 0.5, 1)) +
+  NoLegend()
+ggsave("plots/upper_lower_density_plot_by_intertype2.pdf", width = 1, height = 0.8, scale = 2.2)
+```
+
+## I: Heatmap
+```{r}
+gene.types = c("Upper Layer Genes","Deeper Layer Genes")
+
+qlf = readRDS("../5.lamp5/lamp5.exp_intertype2_pseudobulk_degenes.rds")
+superficial.layer.genes = qlf[[2]]$table %>% filter(logFC > 0) %>% arrange(-logFC) %>% rownames()
+deep.layer.genes = qlf[[2]]$table %>% filter(logFC < 0) %>% arrange(logFC) %>% rownames()
+
+hm.genes = c(superficial.layer.genes[1:25], deep.layer.genes[1:25])
+hm.cells = lamp5.exp@meta.data %>% filter(inter_type2 %in% c("Superficial layer Lamp5+ neurons", "Deep layer Lamp5+ neurons", "Immature Interneurons - CGE 2") &
+                                            region %in% c("Migratory Stream", "Postnatal EC")) %>% rownames() %>% sample(2000)
+hm.data = lamp5.exp@assays$RNA@scale.data %>% as.data.frame()
+hm.data = hm.data[hm.genes, hm.cells] %>% drop_na() %>% as.matrix()
+
+hm.meta = lamp5.exp@meta.data[hm.cells,c("inter_type2", "pseudotime",  "region", "age", "SCT_snn_res.1.5", "spatialref.predicted.id_L3")]
+
+age_colors = viridis::turbo(n = 11)
+names(age_colors) = levels(hm.meta$age)
+names(region.pal) = levels(hm.meta$region)
+
+pseudotime.colors = colorRamp2(seq(min(hm.meta$pseudotime), max(hm.meta$pseudotime), ((max(hm.meta$pseudotime)-min(hm.meta$pseudotime)))/10), 
+                               viridis(n = 11))
+
+cluster.cols = lamp5.layers.pal
+names(cluster.cols) = levels(hm.meta$inter_type2)
+
+cells.anno = columnAnnotation(Region = hm.meta$region,
+                              Cluster = hm.meta$inter_type2,
+                              #`Predicted ID` = hm.meta$spatialref.predicted.id_L3,
+                              Pseudotime = hm.meta$pseudotime,
+                              Age = hm.meta$age, 
+                              col = list(Region = region.pal,
+                                         Age = age_colors,
+                                         Pseudotime = pseudotime.colors,
+                                         Cluster = cluster.cols
+                                         ),
+                                    annotation_name_gp = gpar(fontface = "bold")
+                              )
+
+
+max = 4
+col_fun = colorRamp2(seq(-1*max, max, max/5), rev(brewer.pal(11, "RdBu")))
+
+hm = Heatmap(hm.data,
+        name = "Z-score",
+        show_column_names = F,
+        column_title = NULL,
+        cluster_rows = F,
+        #clustering_distance_columns = "euclidean",
+        col = col_fun,
+        top_annotation = cells.anno, 
+        #column_km = 3,
+        column_split = hm.meta %>% select(region, inter_type2),
+        column_order = hm.meta %>% arrange(pseudotime) %>% rownames(),
+        row_split = factor(rep(gene.types, each = 25), levels = gene.types),
+        #gap = unit(1.5, "mm"),
+        border = T,
+        row_names_gp = gpar(fontface = "italic"))
+png("plots/lamp5.heatmap.png", width = 16, height = 10, units = "in", res = 600, #pointsize = 5
+    )
+hm
+dev.off()
+```
+
+
+```{r}
+sessionInfo()
+```
+

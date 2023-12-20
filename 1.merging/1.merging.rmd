@@ -1,0 +1,296 @@
+---
+title: "Merging samples"
+subtitle: "MANAAB + Franjic // SoupX/DoubletFinder/DropletQC Pipeline"
+author: "Marcos Nascimento"
+date: "`r Sys.Date()`"
+output: html_notebook
+---
+```{r Setup}
+# Loading necessary libraries
+library(tidyverse)
+library(Seurat)
+library(viridis)
+library(patchwork)
+library(DropletUtils)
+library(future)
+library(tibble)
+library(ComplexHeatmap)
+
+# Additional color scales
+library(MetBrewer)
+library(NatParksPalettes)
+
+# Parallel processing setup
+plan("multicore", workers = 80)
+options(future.globals.maxSize = 30 * 1024^3) # 30 GB
+
+# Custom themes and scales for plots
+mytheme <- theme_minimal() + 
+  theme(axis.line = element_line(),
+        axis.ticks = element_line(),
+        text = element_text(family = "Helvetica"))
+
+simple <- NoAxes() + NoLegend()
+mysc <- scale_color_viridis(option = "A")
+region.pal <- c("#5EBFA2", "#F69663", "#731DD8",  "#FB7C7E")
+
+# List of sex-specific genes
+sex.genes <- c("TTTY14", "NLGN4Y", "USP9Y", "UTY", "XIST", "RPS4X", "TMSB4X", "TSIX")
+
+```
+
+#Creating seurat objects from count matrices 
+Count matrices are downloaded from GEO and saved in a folder named "matrices"
+```{r}
+samples <- c("CGE", "MGE", "LGE",  "EC Stream", "dEC", "H71", "H31", "H37", "hsb231", "hsb237", "hsb628", "H48", "H39", "H46","H29", "H33")
+
+srt_objects <- list()
+
+for (s in samples){
+  cat(paste0("Importing sample ", s, "\n"))
+  matrix <- ReadMtx(mtx = paste0("matrices/", s, "_counts.mtx"), 
+                    features = paste0("matrices/", s, "_genes.tsv"), feature.column = 1, 
+                    cells = paste0("matrices/", s, "_barcodes.tsv"))
+  metadata <- read.csv(paste0("matrices/", s, "_metadata.csv"), row.names = 1)
+  srt_objects[[s]] <- CreateSeuratObject(counts = matrix, meta.data = metadata)
+}
+```
+
+Merging samples in a single Seurat object
+```{r}
+all.exp = merge(srt_objects[[1]], srt_objects[-1])
+```
+
+## log Normalization
+```{r}
+all.exp_raw@active.assay = "RNA"
+all.exp_raw = all.exp_raw %>% 
+              NormalizeData(assay = "RNA", 
+                            verbose = F) %>% 
+              FindVariableFeatures() %>% 
+              ScaleData()
+  
+VariableFeatures(all.exp_raw@assays$RNA) = all.exp_raw@assays$RNA@var.features[!(all.exp_raw@assays$RNA@var.features %in% sex.genes)]
+
+
+all.exp_raw = all.exp_raw %>% RunPCA(npcs = 50)
+
+all.exp_raw = all.exp_raw %>% 
+                  RunUMAP(dims = 1:22) %>% 
+                  FindNeighbors(dims = 1:22) %>%
+                  FindClusters(resolution = c(0.8, seq(0.5, 2, 0.5)))
+
+```
+
+
+# Overview FeaturePlots
+```{r}
+FeaturePlot(all.exp, c("GFAP", "HOPX", "TOP2A", "EOMES", "DCX", "TBR1", "SLC17A7", "GAD2", "LHX6", "NR2F2", "PROX1", "CALB2", "LAMP5", "RELN", "VIP", "NPY", "SST", "OLIG2", "SOX10",  "MBP", "FOXJ1", "PECAM1", "PDGFRB", "ADAM28"), order = F, raster = F, ncol = 6) &
+  simple &
+  mysc & 
+  coord_fixed()
+
+ggsave("all.exp_featplots.png", width = 10, height = 6, scale = 2)
+```
+
+# Overview Plots
+Main Cell Types
+```{r}
+DimPlot(all.exp, raster = F, label = T, repel = T, group.by = "all.exp_type", shuffle = T) +
+  coord_fixed() +
+  simple +
+  labs(title = "Cell Types")
+```
+
+Unsupervised Clutering
+```{r}
+DimPlot(all.exp, raster = F, label = T, group.by = "RNA_snn_res.1", shuffle = T) + 
+  coord_fixed() + 
+  simple+
+  scale_color_manual(values = met.brewer("VanGogh2", n = 50, override.order = T))+ 
+  labs(title = "Unsupervised Clustering")
+```
+
+Donor Age
+```{r}
+DimPlot(all.exp, raster = F, label = F, group.by = "age", shuffle = T) + 
+  coord_fixed() + 
+  NoAxes() + 
+  scale_color_viridis_d(option = "H", name = "Donor Age")+ 
+  labs(title = NULL)
+```
+
+Donor Age Group
+```{r}
+DimPlot(all.exp, raster = F, label = F, group.by = "age_group", shuffle = T) + 
+  coord_fixed() + 
+  NoAxes() + 
+  scale_color_manual(values=met.brewer("Hokusai3"), name = "Donor Age Group")+ 
+  labs(title = NULL)
+```
+
+Sample ID
+```{r}
+DimPlot(all.exp, raster = F, label = F, group.by = "sample", shuffle = T) + 
+  coord_fixed() + 
+  NoAxes() +
+  scale_color_manual(values=met.brewer("Juarez", 16), name = "Sample")+ 
+  labs(title = NULL)
+```
+
+Sample Origin
+```{r}
+DimPlot(all.exp, raster = F, label = F, group.by = "region", shuffle = T) + 
+  coord_fixed() + 
+  NoAxes() +
+  scale_color_manual(name = "Sample Origin", values = region.pal) + 
+  labs(title = NULL)
+```
+
+EC Stream Cells
+```{r}
+DimPlot(all.exp, group.by = "stream_highlight", order = T, raster = F) + 
+  scale_color_manual(values = (region.pal)[3], na.value = "grey85", labels = c("EC Stream (14d)", "Other cells")) +
+  coord_fixed() +
+  NoAxes() + 
+  labs(title = "EC Stream Cells")
+```
+
+Nuclear Fraction
+```{r}
+FeaturePlot(all.exp, "nuclear_fraction", order = T, raster = F) +
+  scale_color_viridis(limits = c(0, 1), name = "Nuclear Fraction") +
+  coord_fixed() +
+  NoAxes()+
+  labs(title = NULL)
+```
+
+# Saving all.exp
+```{r}
+Idents(all.exp) = "all.exp_type"
+all.exp <- BuildClusterTree(all.exp, assay = "RNA", reorder = T, features = all.exp@assays$RNA@var.features)
+
+saveRDS(all.exp, file = "all.exp.rds", compress = F)
+```
+
+# Subsetting interneurons
+```{r}
+inter.exp.cells = all.exp@meta.data %>% filter(all.exp_type == "Cortical Interneurons") %>% rownames()
+DimPlot(all.exp, label = T, cells.highlight = inter.exp.cells, raster = F) + simple + coord_fixed()
+
+inter.exp = subset(all.exp, cells = inter.exp.cells)
+```
+
+## logNormalization
+```{r}
+inter.exp = inter.exp %>% 
+              NormalizeData(assay = "RNA", 
+                            verbose = F) %>% 
+              FindVariableFeatures() %>% 
+              ScaleData(features = rownames(.))
+  
+VariableFeatures(inter.exp@assays$RNA) = inter.exp@assays$RNA@var.features[!(inter.exp@assays$RNA@var.features %in% sex.genes)]
+
+inter.exp@active.assay = "RNA"
+inter.exp = inter.exp %>% RunPCA(npcs = 20) %>% 
+                          RunUMAP(dims = 1:8) %>%
+                          FindNeighbors(dims = 1:8) %>%
+                          FindClusters(resolution = c(0.8, seq(0.5, 2, 0.5)))
+
+Idents(inter.exp) = "RNA_snn_res.0.5"
+inter.exp = BuildClusterTree(inter.exp, 
+                             dims = 1:8, 
+                             assay = "RNA", 
+                             reorder = T, 
+                             features = inter.exp@assays$RNA@var.features)
+
+inter.exp@meta.data$RNA_snn_res.0.5 = factor(inter.exp@meta.data$RNA_snn_res.0.5 , levels = inter.exp@tools$BuildClusterTree$tip.label)
+
+inter.exp@reductions$umap@cell.embeddings[, "UMAP_1"] = inter.exp@reductions$umap@cell.embeddings[, "UMAP_1"] * -1 #Inverting the x axis so we can have more intuitive visualizations, with maturation going from left to right.
+```
+
+### Overview Plots
+```{r}
+DimPlot(inter.exp, label = T, group.by = "RNA_snn_res.0.5") + 
+  scale_color_manual(values = met.brewer("VanGogh2", length(levels(inter.exp$RNA_snn_res.0.5)))) + 
+  simple + 
+  coord_fixed() + 
+  labs(title = "Unsupervised Clustering")
+``` 
+
+```{r}
+DimPlot(inter.exp, label = F, group.by = "age", shuffle = T) + 
+  coord_fixed() + 
+  NoAxes() + 
+  scale_color_viridis_d(name = "Age", option = "H")+ 
+  labs(title = NULL)
+```
+
+```{r}
+DimPlot(inter.exp, label = F, group.by = "age_group", shuffle = T) + 
+  coord_fixed() + 
+  NoAxes() + 
+  #scale_color_viridis_d()
+  scale_color_manual(values=met.brewer("Hokusai3"))+ 
+  labs(title = NULL)
+```
+
+
+```{r}
+DimPlot(inter.exp, label = F, group.by = "sample", shuffle = T) + 
+  coord_fixed() + 
+  NoAxes() +
+  scale_color_manual(values=met.brewer("Juarez", 16))+ 
+  labs(title = NULL)
+```
+
+
+```{r}
+DimPlot(inter.exp, raster = F, label = F, group.by = "region", shuffle = T) + 
+  coord_fixed() + 
+  NoAxes() +
+  scale_color_manual(name = "Region of Origin", values = region.pal)+ 
+  labs(title = NULL)
+```
+
+
+```{r}
+DimPlot(inter.exp, group.by = "stream_highlight", order = T) + 
+   scale_color_manual(values = (region.pal)[3], na.value = "grey85") +
+  coord_fixed() +
+  NoAxes()+ 
+  labs(title = "EC Stream Cells")
+```
+
+
+```{r}
+DimPlot(inter.exp, group.by = "dec_highlight", order = T) +
+  scale_color_manual(values = (region.pal)[2], na.value = "grey85") +
+  coord_fixed() +
+  NoAxes()+ 
+  labs(title = "Embryonic EC Cells")
+```
+
+
+```{r}
+inter.exp@active.assay = "RNA"
+(FeaturePlot(inter.exp, c("GFAP", "TNC",  "SOX2", "TOP2A",  "OLIG2", "SOX10", "DCX", "GABRB2", "LHX6", "NR2F2", "PROX1", "PBX3", "SST", "PVALB", "NPY",  "CALB2", "VIP", "RELN", "KIT",  "LAMP5", "TBR1", "SLC17A7", "ADAM28", "PECAM1"), order = T, ncol = 6) &
+  simple &
+  mysc & 
+  coord_fixed() &
+  theme(text = element_text(family = "Helvetica")))
+#ggsave("inter.exp_overview_featplots.png", height = 14, width = 28)
+```
+
+# Saving inter.exp
+```{r}
+saveRDS(inter.exp, "inter.exp_step1.rds", compress = F)
+```
+
+These were the processing steps to generate the basic datasets used in the paper: all.exp and inter.exp
+
+```{r}
+sessionInfo()
+```
+
+

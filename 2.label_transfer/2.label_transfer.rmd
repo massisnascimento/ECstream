@@ -1,0 +1,511 @@
+---
+title: "Label Transfer"
+author: "Marcos Nascimento"
+format: html
+number-sections: true
+bibliography: references.bib
+---
+
+## Introduction
+
+In this notebook I will use Seurat's label transfer to label cells in the postnatal EC to the cell identities of two distinct reference datasets:
+
+-   MTG 10x Reference. 41k interneurons in the adult MTG sequenced using 10x kits
+
+-   MTG/STG MERFISH Reference. 4k gene panel and valuable information about cortical layer positioning.
+
+## Setup
+
+```{r setup}
+# Loading necessary libraries
+library(Seurat)            # For single-cell genomics data analysis
+library(patchwork)         # For combining ggplot2 plots
+library(ggforce)           # Additional ggplot2 functionalities
+library(tidyverse)         # Data manipulation and visualization tools
+library(ggsci)             # Scientific journal and sci-fi themed color palettes
+library(circlize)          # Circular visualization
+library(ggrepel)           # Repel overlapping text labels away from each other
+library(future)            # Parallel processing
+library(ComplexHeatmap)    # Complex heatmaps
+library(scales)            # Scale functions for visualization
+
+# Setting options
+options(ggrepel.max.overlaps = 10)             # Max label overlaps for ggrepel
+options(future.globals.maxSize = 50*1024^3)    # Max size for future package objects
+
+# Creating simple plot theme
+simple <- NoAxes() + NoLegend()
+
+# Defining color palettes
+region.pal <- c("#5EBFA2", "#F69663", "#731DD8",  "#FB7C7E")
+lamp5.layers.pal <- c("#FF7F0E", "#BF2772", "#4575b4")
+
+# Defining a custom function to assign values to cells
+assign.to.cells <- function(data, column.1, value.1, column.2, value.2) {
+  data_subset <- data@meta.data %>% filter(get(column.1) %in% value.1)
+  data@meta.data[row.names(data_subset), column.2] <- value.2
+  return(data)
+}
+
+```
+
+## Loading Query dataset
+
+The query dataset for the label transfer is based on the interneuron maturation dataset. Since label-transferring performs poorly when cells in the query dataset are not present in the reference dataset, I decided to subset the interneuron dataset to only include cells present in the postnatal entorhinal cortex, as the references I will use contain only cells in the adult cortical areas of the temporal lobe.
+
+Original dataset
+
+```{r}
+# Loading the single-cell expression data and mature interneuron data
+inter.exp_step1_file <- "../1.merging/inter.exp_step1.rds"
+mature_interneurons_file <- "mature_interneurons.RData"
+if (file.exists(inter.exp_step1_file)) {
+    inter.exp_step1 <- readRDS(inter.exp_step1_file)
+} else {
+    stop("File not found: ", inter.exp_step1_file)
+}
+if (file.exists(mature_interneurons_file)) {
+    load(file = mature_interneurons_file)
+} else {
+    stop("File not found: ", mature_interneurons_file)
+}
+
+# Generating DimPlots with different groupings
+# Grouping by unsupervised clusters
+DimPlot(inter.exp_step1,
+        label = TRUE,
+        repel = FALSE, 
+        group.by = "RNA_snn_res.1") +
+  coord_fixed() + simple
+
+# Grouping by region of origin
+DimPlot(inter.exp_step1,
+        label = FALSE,
+        repel = TRUE,
+        group.by = "region", 
+        shuffle = TRUE) +
+  coord_fixed() + scale_color_manual(values = region.pal) + NoAxes()
+
+# Grouping by sex
+DimPlot(inter.exp_step1,
+        label = TRUE,
+        repel = TRUE,
+        group.by = "sex",
+        shuffle = TRUE
+        ) +
+  coord_fixed() +
+  simple
+
+# Grouping by cell type
+DimPlot(inter.exp_step1,
+        label = TRUE,
+        repel = TRUE,
+        group.by = "all.exp_type",
+        shuffle = TRUE
+        ) +
+  coord_fixed() +
+  simple
+
+# Grouping by age
+DimPlot(inter.exp_step1,
+        group.by = "age",
+        shuffle = TRUE
+        ) +
+  coord_fixed() +
+  scale_color_viridis_d(option = "H") +
+  simple
+
+```
+
+Selecting postnatal EC neurons only
+
+```{r}
+# Subsetting the dataset to include only mature interneurons
+inter.exp_subset <- subset(inter.exp_step1, cells = mature_interneurons)
+
+# Visualizing the subsetted data, grouped by region
+DimPlot(
+  inter.exp_subset,
+  label = FALSE,              # Disabling labels on the plot
+  group.by = "region",        # Grouping data points by region
+  shuffle = TRUE              # Enabling shuffle to avoid overplotting
+) + 
+  scale_color_manual(name = "Region of Origin", values = region.pal) +  # Custom color palette
+  labs(title = NULL) +        # Removing the title for a cleaner look
+  coord_fixed() +             # Keeping the aspect ratio of the plot fixed
+  NoAxes()                    # Removing axes
+```
+
+## Loading Reference datasets
+
+### MERFISH Reference
+
+The data from a recent paper using 4000-gene MERFISH libraries[@Fang2022] was [downloaded from Dryad](https://datadryad.org/stash/dataset/doi:10.5061/dryad.x3ffbg7mw) into a folder and its path assigned to the "data_folder" variable.
+
+```{r include=FALSE}
+data_folder = "external_data/fang_2022/data"
+
+all_sample_metadata <-
+  read_csv(file.path(data_folder, "sample_metadata.csv"))
+human_sample_metadata = all_sample_metadata %>% filter(species == "human")
+human4000_sample_metadata = human_sample_metadata %>% filter(`number of genes` == 4000) #Only using  datasets with 4000-gene libraries
+
+data.to.use = human4000_sample_metadata
+
+
+#Rebuilding the count matrices for all samples:
+
+fang.objects = list()
+
+for (s in 1:nrow(data.to.use)) {
+  cell_info = read_csv(file.path(data_folder, paste0(data.to.use$id[s], ".features.csv")))
+  gene_names = read_csv(file.path(data_folder, paste0(data.to.use$id[s], ".genes.csv")))
+  cell_gene_counts = read_csv(file.path(data_folder, paste0(data.to.use$id[s], ".matrix.csv")))
+  
+  # Rename the 'gene' column to 'gene_index' for clarity
+  cell_gene_counts <- cell_gene_counts %>%
+    dplyr::rename(gene_index = row)
+  
+  # Add gene names to the cell_gene_counts data frame
+  cell_gene_counts_with_names <- cell_gene_counts %>%
+    left_join(gene_names %>% mutate(gene_index = 1:n()), by = "gene_index")
+  
+  # Spread the data frame into a wide format with cells as columns and genes as rows
+  count_matrix <- cell_gene_counts_with_names %>%
+    spread(key = col,
+           value = val,
+           fill = 0) %>%
+    #select(-c(gene_index, name)) %>% # Remove the 'gene_index' column
+    as.data.frame()
+  
+  count_matrix = count_matrix %>% column_to_rownames(var = "name")
+  count_matrix$gene_index = NULL
+  
+  colnames(count_matrix) = cell_info$name
+  
+  # Convert the data frame to a matrix
+  count_matrix <- as.matrix(count_matrix)
+  
+  fang.objects[[s]] = count_matrix %>% CreateSeuratObject(
+    project = data.to.use$id[s],
+    meta.data = cell_info %>% as.data.frame() %>% 
+      column_to_rownames(var = "name") %>% 
+      mutate(run = data.to.use$id[s])
+  )
+}
+```
+
+There are some significant batch effects. I used Seurat's integration to remove batch effects and achieve a clustering that reflects the L3 granularity. I used the same normalization method (SCT) of my query dataset
+
+```{r, eval=FALSE}
+# RNA assays in fang.objects are not normalized
+
+for (i in 1:length(fang.objects)) {
+    Idents(fang.objects[[i]]) = "cluster_L1"
+    fang.objects[[i]] <- subset(fang.objects[[i]], idents = "INC") %>% #Keeping only interneurons.
+                         NormalizeData(verbose = F) %>%
+                         FindVariableFeatures(selection.method = "vst",
+                                              nfeatures = 2000,
+                                              verbose = F)
+}
+features <- SelectIntegrationFeatures(fang.objects)
+
+fang.integrated = FindIntegrationAnchors(fang.objects, 
+                                         anchor.features = features) %>% 
+                  IntegrateData()
+
+
+DefaultAssay(fang.integrated) <- "integrated"
+
+fang.integrated <- ScaleData(fang.integrated, verbose = F) %>% 
+                   RunPCA(verbose = F) 
+
+ElbowPlot(fang.integrated, ndims = 50)
+pc.to.use = 15
+
+fang.integrated = RunUMAP(fang.integrated, dims = 1:pc.to.use) %>% 
+                  FindNeighbors(dims = 1:pc.to.use) %>% 
+                  FindClusters(resolution = 0.5)
+
+
+saveRDS(fang.integrated, "fang.integrated.rds")
+```
+
+Dimplots of the reference to be used:
+
+```{r}
+DimPlot(fang.integrated, 
+        label = F, 
+        group.by = c("integrated_snn_res.0.8", "run"), 
+        raster = F) + 
+  coord_fixed()
+
+DimPlot(fang.integrated, 
+        label = T, 
+        shuffle = T, 
+        group.by = c("cluster_L1", 
+                     "cluster_L2", 
+                     "cluster_L3"), 
+        raster = F, repel = F) & 
+  coord_fixed() & 
+  simple
+```
+
+Label Transfer
+
+```{r, eval=F}
+#Comparing cells in different datasets: Finding anchors:
+temporal_lobe_anchors <-
+  FindTransferAnchors(
+    reference = fang.integrated,
+    query = inter.exp_subset,
+    dims = 1:15,
+    reference.assay = "integrated",
+  )
+
+spatialref_predictions_L2 <- TransferData(anchorset = temporal_lobe_anchors,
+                                          refdata = fang.integrated$cluster_L2) %>% 
+                                            dplyr::rename(spatialref.predicted.id_L2 = predicted.id,
+                                                          spatialref.prediction.L2.score.max = prediction.score.max)
+
+spatialref_predictions_L3 <- TransferData(anchorset = temporal_lobe_anchors,
+                             refdata = fang.integrated$cluster_L3) %>% 
+                               dplyr::rename(spatialref.predicted.id_L3 = predicted.id,
+                                             spatialref.prediction.L3.score.max = prediction.score.max)
+
+inter.exp_spatialref_predicted = AddMetaData(inter.exp_step1, metadata = spatialref_predictions_L2) %>%
+                                 AddMetaData(metadata = spatialref_predictions_L3)
+```
+
+#### MERFISH Label Transfer Results
+
+```{r, fig.width=16, fig.height=12}
+DimPlot(
+    inter.exp_spatialref_predicted,
+    label = T,
+    shuffle = T,
+    repel = T,
+    group.by = c("spatialref.predicted.id_L2", "spatialref.predicted.id_L3")
+  ) & 
+  coord_fixed() & 
+  NoAxes() & 
+  plot_annotation(title = "MERFISH Label Transfer -  20 PCS",
+                  theme = theme(plot.title = element_text(size = 20, face = "bold")))
+```
+
+### MTG Reference
+
+I converted the Allen Brain Institute's MTG reference from AnnData to Seurat format. Next, I subset the object to include only interneurons and used Seurat's integration tool to remove batch effects. 
+
+```{r, fig.width=16, fig.height=12, eval=FALSE}
+mtg_ref <- readRDS("external_data/Reference_MTG_RNAseq_final-nuclei.2022-06-07_converted.rds")
+Idents(mtg_ref) = "class_label"
+interneuron_mtg_ref = subset(mtg_ref, idents = "Neuronal: GABAergic")
+
+interneuron_mtg_ref_objects = SplitObject(interneuron_mtg_ref, split.by = "external_donor_name_label")
+
+
+for (i in 1:length(interneuron_mtg_ref_objects)) {
+    interneuron_mtg_ref_objects[[i]] <- NormalizeData(interneuron_mtg_ref_objects[[i]], verbose = F) %>%
+                                        FindVariableFeatures(selection.method = "vst",
+                                                             nfeatures = 2000,
+                                                             verbose = F)
+}
+features <- SelectIntegrationFeatures(interneuron_mtg_ref_objects)
+
+interneuron_mtg_ref.integrated = FindIntegrationAnchors(interneuron_mtg_ref_objects, 
+                                         anchor.features = features) %>% 
+                                 IntegrateData()
+
+
+DefaultAssay(interneuron_mtg_ref.integrated) <- "integrated"
+
+interneuron_mtg_ref.integrated <- ScaleData(interneuron_mtg_ref.integrated, verbose = F) %>% 
+                                            RunPCA(verbose = F) 
+
+ElbowPlot(interneuron_mtg_ref.integrated, ndims = 50)
+pc.to.use = 15
+
+interneuron_mtg_ref.integrated = RunUMAP(interneuron_mtg_ref.integrated, dims = 1:pc.to.use) %>% 
+                  FindNeighbors(dims = 1:pc.to.use) %>% 
+                  FindClusters(resolution = 0.5)
+
+DimPlot(interneuron_mtg_ref.integrated, group.by = c("subclass_label", "cluster_label"), shuffle = T, label = T, repel = T, raster = F) 
+
+DefaultAssay(interneuron_mtg_ref.integrated) = "RNA"
+Idents(interneuron_mtg_ref.integrated) = "subclass_label"
+saveRDS(interneuron_mtg_ref.integrated, "interneuron_mtg_ref.integrated.rds", compress = F)
+```
+
+Label transfer
+
+```{r, echo=FALSE, tidy=TRUE}
+mtg_ref_anchors <-
+  FindTransferAnchors(
+    reference = interneuron_mtg_ref.integrated,
+    query = inter.exp_subset,
+    reference.assay = "integrated",
+    dims = 1:15
+  )
+
+
+#Comparing cells in different datasets: Finding anchors:
+
+mtgref_predictions_L2 <- TransferData(
+  anchorset = mtg_ref_anchors,
+  refdata = interneuron_mtg_ref.integrated$subclass_label) %>% 
+    dplyr::rename(mtgref.predicted.id_L2 = predicted.id,
+    mtgref.prediction.L2.score.max = prediction.score.max)
+
+mtgref_predictions_L3 <- TransferData(
+  anchorset = mtg_ref_anchors,
+  refdata = interneuron_mtg_ref.integrated$cluster_label) %>% 
+        dplyr::rename(mtgref.predicted.id_L3 = predicted.id,
+        mtgref.prediction.L3.score.max = prediction.score.max)
+
+
+inter.exp_mtgref_predicted = AddMetaData(inter.exp_step1, metadata = mtgref_predictions_L2) %>%
+                             AddMetaData(metadata = mtgref_predictions_L3)
+```
+
+#### MTG Label Transfer Results
+
+```{r, fig.width=16, fig.height=12}
+DimPlot(
+  inter.exp_mtgref_predicted,
+  label = T,
+  shuffle = T,
+  repel = T,
+  group.by = c("mtgref.predicted.id_L2", "mtgref.predicted.id_L3")
+) & 
+  coord_fixed() & 
+  simple & 
+  plot_annotation(title = "MTG Label Transfer -  20 PCS",
+                  theme = theme(plot.title = element_text(size = 20, face = "bold")))
+```
+
+
+#Incorporating all label transfer into metadata
+
+```{r}
+inter.exp_predicted = inter.exp_step1 %>%  AddMetaData(metadata = spatialref_predictions_L2) %>%
+                                     AddMetaData(metadata = spatialref_predictions_L3) %>% 
+                                     AddMetaData(metadata = mtgref_predictions_L2) %>%
+                                     AddMetaData(metadata = mtgref_predictions_L3)
+
+data = inter.exp_predicted@meta.data %>% 
+  filter(mtgref.predicted.id_L2 %in% c("Lamp5", "Lamp5 Lhx6", "Pax6", "Sncg")) %>% 
+  group_by(mtgref.predicted.id_L2, spatialref.predicted.id_L3, age) %>% 
+  summarize(count = n()) %>% 
+  ungroup() %>% 
+  gather_set_data(c(1, 2)) %>% 
+  drop_na()
+
+ggplot(data, aes(x, id = id , split = y, value = count)) +
+  geom_parallel_sets(aes(fill = mtgref.predicted.id_L2), 
+                     alpha = 0.5) +
+  geom_parallel_sets_axes(axis.width = 0.1) +
+  geom_parallel_sets_labels(colour = 'tomato', angle = 0, nudge_y = 1, hjust = 0.5) + 
+  scale_fill_manual(values = c("#9370DB", "#48D1CC", "#DAA520", "#B22222")) + 
+  theme_void() + NoLegend()
+```
+
+
+```{r}
+## Interneuron Cell Types
+
+DimPlot(inter.exp_predicted, group.by = c("RNA_snn_res.0.5", "RNA_snn_res.1", "RNA_snn_res.2"), label = T, pt.size = 1) & 
+  coord_fixed() & 
+  simple
+
+```
+
+```{r}
+#Assigning interneuron types as inter_type
+inter.exp_step2 = assign.to.cells(data = inter.exp_predicted,
+                        column.1 = "RNA_snn_res.2", 
+                        value.1 = c(5, 0, 13,11, 15, 34, 21, 6, 32, 4, 17, 9, 23, 10, 35),
+                        column.2 = "inter_type",
+                        value.2 = "Immature Interneurons - MGE 1") %>% 
+                      assign.to.cells( 
+                        column.1 = "RNA_snn_res.2", 
+                        value.1 = c(0, 2, 18),
+                        column.2 = "inter_type",
+                        value.2 = "Immature Interneurons - Mix") %>% 
+                      assign.to.cells(
+                        column.1 = "RNA_snn_res.2", 
+                        value.1 = c(27, 28, 33),
+                        column.2 = "inter_type",
+                        value.2 = "Immature Interneurons - MGE 2") %>% 
+                      assign.to.cells(
+                        column.1 = "RNA_snn_res.2", 
+                        value.1 = c(1, 8, 24, 25, 19, 16, 36, 3),
+                        column.2 = "inter_type",
+                        value.2 = "Immature Interneurons - CGE 1") %>% 
+                      assign.to.cells( 
+                        column.1 = "RNA_snn_res.2", 
+                        value.1 = c(26, 12, 29, 30),
+                        column.2 = "inter_type",
+                        value.2 = "Immature Interneurons - CGE 2")
+                      
+
+
+inter.exp_step2@meta.data  <- inter.exp_step2@meta.data %>% mutate(inter_type = coalesce(mtgref.predicted.id_L2, inter_type))
+
+inter.exp_step2@meta.data$inter_type = inter.exp_step2@meta.data$inter_type %>% 
+  factor(levels = c("Immature Interneurons - Mix", 
+                    "Immature Interneurons - CGE 1", 
+                    "Immature Interneurons - CGE 2", 
+                    "Immature Interneurons - MGE 1",
+                    "Immature Interneurons - MGE 2",
+                    "Vip", 
+                    "Pax6",
+                    "Sncg",
+                    "Lamp5", 
+                    "Lamp5 Lhx6",
+                    "Chandelier", 
+                    "Pvalb",
+                    "Sst",
+                    "Sst Chodl"
+                    ))
+
+
+#Assigning subpalial lineages as subpallium_type
+inter.exp_step2@meta.data  = inter.exp_step2@meta.data %>% mutate(subpallium_type = if_else(inter_type %>% grepl("Immature Interneurons", .), inter_type, 
+                                                                                            if_else(inter_type %in% c("Vip", "Pax6", "Sncg", "Lamp5"), "Mature CGE-derived",
+                                                                                            if_else(inter_type %in% c("Sst", "Sst Chodl", "Pvalb", "Chandelier", "Lamp5 Lhx6"), "Mature MGE-derived", NA))))
+
+
+inter.exp_step2@meta.data  = inter.exp_step2@meta.data %>% mutate(mature_type = if_else(subpallium_type %>% grepl("Mature", .), inter_type, NA)) 
+
+
+DimPlot(inter.exp_step2, group.by = "inter_type", label = F, shuffle = T) + 
+  coord_fixed() + 
+  NoAxes() + 
+  scale_color_manual(values = sample(pal_d3("category20")(16), 16)) +
+  labs(title = "Interneuron Subtypes")
+
+DimPlot(inter.exp_step2, group.by = "subpallium_type", label = F, shuffle = T) + 
+  coord_fixed() + 
+  NoAxes() +
+  scale_color_manual(values = c("#fc8d59", "#fee090",  "#80cdc1", "#74add1","grey60", "#d73027","#4575b4", "#228B22","grey")) +
+  labs(title = "Subpallial Lineages")
+
+DimPlot(inter.exp_step2, group.by = "mature_type", label = F, shuffle = T) + 
+  coord_fixed() + 
+  NoAxes() + 
+  scale_color_manual(values = c("#556B2F", "#32CD32", "#B22222", "#9370DB", "#48D1CC", "#FF8C00", "#4169E1", "#DAA520", "#FF6347"), na.value = "grey90") +
+  labs(title = "Mature Identities")
+```
+
+#Quick look at DE genes
+```{r}
+Idents(inter.exp_step2) = "inter_type"
+inter.exp.markers = FindAllMarkers(inter.exp_step2, only.pos = T)
+
+saveRDS(inter.exp.markers, file = "inter.exp_markers_by_intertype.rds")
+```
+
+```{r}
+saveRDS(inter.exp_step2, "inter.exp_step2.rds", compress = F)
+```

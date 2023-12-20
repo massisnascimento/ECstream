@@ -1,0 +1,304 @@
+---
+title: "Lineage Trajectory w. Monocle"
+subtitle: "After removing low-quality nuclei detected with DropletQC"
+author: "Marcos Nascimento"
+date: "`r Sys.Date()`"
+output: html_notebook
+---
+
+# Setup 
+```{r Setup}
+library(tidyverse)
+library(Seurat)
+library(ggplot2)
+library(viridis)
+library(patchwork)
+library(DropletUtils)
+library(MetBrewer)
+library(future)
+library(SeuratWrappers)
+library(monocle3)
+library(ggtrace)
+library(progress)
+plan("multicore", workers = 80)
+options(future.globals.maxSize= 5*1024*1024^2)
+
+mytheme <-   theme_minimal() + 
+  theme(axis.line = element_line(),
+        axis.ticks = element_line(),)
+
+simple <- NoAxes() + NoLegend()
+
+mysc <- scale_color_viridis(option = "A")
+region.pal = c("#5EBFA2", "#F69663", "#731DD8",  "#FB7C7E")
+inter_type.pal <- c("#191970", "#708090", "#F4A460", "#6B8E23", 
+                   "#F08080", "#87CEEB", "#4169E1", "#90EE90", 
+                   "#CD5C5C", "#FFD700", "#008B8B", "#FF6347", 
+                   "#800080", "#008080", "#FF8C00", "#FF69B4")
+```
+
+# Inter.exp
+## Loading Data
+```{r}
+inter.exp_step2<- readRDS("../3.label_transfer/inter.exp_step2.rds")
+inter.exp_step2@active.assay = "RNA"
+Idents(inter.exp_step2) = "RNA_snn_res.1"
+
+
+(DimPlot(inter.exp_step2, label = T, group.by = "RNA_snn_res.0.8", shuffle = T) +
+  coord_fixed() +
+  simple + 
+  labs(title = "Clusters")) +
+
+(DimPlot(inter.exp_step2, label = F, group.by = "age", shuffle = T) +
+  coord_fixed() +
+  NoAxes() + 
+  labs(title = "Age") + 
+  scale_color_viridis_d(option = "H")) +
+
+(DimPlot(inter.exp_step2, label = T, group.by = "inter_type", shuffle = T) +
+  coord_fixed() +
+  simple + 
+  labs(title = "Cell Identity") + 
+  scale_color_manual(values = inter_type.pal))
+
+```
+# Converting the seurat object to a CDS object
+```{r}
+inter.exp_cds = SeuratWrappers::as.cell_data_set(inter.exp_step2)
+
+
+inter.exp_cds = cluster_cells(reduction_method = "UMAP", cluster_method = "louvain", inter.exp_cds, k = 50)
+plot_cells(inter.exp_cds, color_cells_by = "cluster")
+plot_cells(inter.exp_cds, color_cells_by = "partition")
+
+inter.exp_cds = learn_graph(inter.exp_cds, close_loop = T, 
+                            learn_graph_control = list(nn.k = 10,
+                                                       minimal_branch_len = 30,
+                                                       euclidean_distance_ratio = 3, 
+                                                       geodesic_distance_ratio = 0.1))
+
+plot_cells(inter.exp_cds,
+           color_cells_by = "cluster",
+           label_groups_by_cluster=FALSE,
+           label_leaves=F,
+           label_branch_points=F,
+           trajectory_graph_color = "cyan") + 
+  coord_fixed()
+
+#Calculating pseudotime
+
+inter.exp_cds <- order_cells(inter.exp_cds)
+plot_cells(inter.exp_cds,
+           color_cells_by = "pseudotime",
+           label_cell_groups=FALSE,
+           label_leaves=FALSE,
+           label_branch_points=FALSE,
+           label_roots = F,
+           trajectory_graph_segment_size = 0.7,
+           trajectory_graph_color = "cyan",
+           graph_label_size=1.5) + 
+  scale_color_viridis(name = "Pseudotime")+
+  coord_fixed() +
+  NoAxes() + 
+  theme(legend.position = "bottom")
+ggsave("inter.exp_pseudotime.png", width = 5, height = 4, dpi = 600)
+saveRDS(inter.exp_cds, file = "inter.exp_cds.rds", compress = F)
+```
+
+
+## Updating Seurat object 
+Adding pseudotime to the original seurat object as a metadata column
+```{r}
+#Identifying distinct lineages for each neuronal subtype in the dataset by selecting distinct branches in the trajectory:
+#This is how I manually selected each lineage, connecting the most undifferentiated cells in the immature mix cluster to the cells at the "tips" of each cluster. For reproducibility purposes, I am supplying a .Rdata file (cells_in_each_lineage.Rdata)with the selected cells for each lineage:
+#cge.vip.sncg.pax_lineage_cells = choose_graph_segments(inter.exp_cds, return_list = T) 
+# cge.lamp_lineage_cells = choose_graph_segments(inter.exp_cds, return_list = T)
+# mge.chand_lineage_cells = choose_graph_segments(inter.exp_cds, return_list = T)
+# mge.lamp_lineage_cells = choose_graph_segments(inter.exp_cds, return_list = T)
+# mge.sst_lineage_cells = choose_graph_segments(inter.exp_cds, return_list = T)
+# mge.pvalb_lineage_cells = choose_graph_segments(inter.exp_cds, return_list = T)
+
+inter.exp_step2@meta.data[cells_in_each_lineage$cge.vip.sncg.pax_lineage, "CGE.VIP_lin"] = "CGE-VIP/SNCG/PAX6"
+inter.exp_step2@meta.data[cells_in_each_lineage$cge.lamp_lineage, "CGE.LAMP5_lin"] = "CGE-LAMP5"
+inter.exp_step2@meta.data[cells_in_each_lineage$mge.lamp_lineage, "MGE.LAMP5_lin"] = "MGE-LAMP5"
+inter.exp_step2@meta.data[cells_in_each_lineage$mge.chand_lineage, "MGE.CHAND_lin"] = "MGE-Chandelier"
+inter.exp_step2@meta.data[cells_in_each_lineage$mge.sst_lineage, "MGE.SST_lin"] = "MGE-SST"
+inter.exp_step2@meta.data[cells_in_each_lineage$mge.pvalb_lineage, "MGE.PVALB_lin"] = "MGE-PVALB"
+
+inter.exp_step3<- AddMetaData(
+  object = inter.exp_step2,
+  metadata = inter.exp_cds@principal_graph_aux@listData$UMAP$pseudotime,
+  col.name = "pseudotime"
+)
+inter.exp_step3@meta.data$pseudotime = as.numeric(gsub("Inf", NA, inter.exp_step2@meta.data$pseudotime))
+
+saveRDS(inter.exp_step3, file = "inter.exp_step3.rds")
+```
+
+# Plots 
+## Lineages Pseudotime
+```{r}
+umap.coords = inter.exp_step3@reductions$umap@cell.embeddings
+cells.meta = inter.exp_step3@meta.data
+data = cbind(umap.coords, cells.meta)
+
+
+ptsize = 0.2
+
+a = ggplot(data, aes(UMAP_1, UMAP_2)) + 
+    geom_point(color = "grey90", size = ptsize) +
+    geom_point(data = data %>% filter(!is.na(CGE.VIP_lin)), aes(col = pseudotime), size = ptsize) +
+    scale_color_viridis() + 
+    theme_void() + 
+    coord_fixed() + 
+    labs(title = "CGE-VIP Lineage") + 
+    NoLegend()
+
+b = ggplot(data, aes(UMAP_1, UMAP_2)) + 
+    geom_point(color = "grey90", size = ptsize) +
+    geom_point(data = data %>% filter(!is.na(CGE.LAMP5_lin)), aes(color = pseudotime), size = ptsize) +
+    scale_color_viridis() +
+    theme_void() + 
+    coord_fixed() + 
+    labs(title = "CGE-LAMP5 Lineage") + 
+    NoLegend()
+
+c = ggplot(data, aes(UMAP_1, UMAP_2)) + 
+    geom_point(color = "grey90", size = ptsize) +
+    geom_point(data = data %>% filter(!is.na(`MGE.LAMP5_lin`)), aes(color = pseudotime), size = ptsize) +
+    scale_color_viridis() +
+    theme_void() + 
+    coord_fixed() + 
+    labs(title = "MGE-LAMP5 Lineage") + 
+    NoLegend()
+
+d = ggplot(data, aes(UMAP_1, UMAP_2)) + 
+    geom_point(color = "grey90", size = ptsize) +
+    geom_point(data = data %>% filter(!is.na(`MGE.CHAND_lin`)), aes(color = pseudotime), size = ptsize) +
+    scale_color_viridis() +
+    theme_void() + 
+    coord_fixed() + 
+    labs(title = "MGE-Chandelier Lineage") + 
+    NoLegend()
+
+e = ggplot(data, aes(UMAP_1, UMAP_2)) + 
+    geom_point(color = "grey90", size = ptsize) +
+    geom_point(data = data %>% filter(!is.na(`MGE.PVALB_lin`)), aes(color = pseudotime), size = ptsize) +
+    scale_color_viridis() +
+    theme_void() + 
+    coord_fixed() + 
+    labs(title = "MGE-SST Lineage") + 
+    NoLegend()
+
+f = ggplot(data, aes(UMAP_1, UMAP_2)) + 
+    geom_point(color = "grey90", size = ptsize) +
+    geom_point(data = data %>% filter(!is.na(`MGE.SST_lin`)), aes(color = pseudotime), size = ptsize) +
+    scale_color_viridis() +
+    theme_void() + 
+    coord_fixed() + 
+    labs(title = "MGE-SST Lineage") + 
+    NoLegend()
+
+
+
+(a+b+c+d+e+f & theme(plot.title = element_text(family = "Arial", face = "bold", hjust = 0.5))) + plot_layout(nrow = 1)
+ggsave("inter.exp_step3_pseudotime_lineages_geompoint.png", width = 16, height = 3, dpi = 600)
+
+```
+
+## Region composition along pseudotime
+```{r}
+n.bin = 12
+
+g = ggplot(inter.exp_step3@meta.data %>% filter(CGE.VIP_lin == "CGE-VIP/SNCG/PAX6"), aes(pseudotime, fill = fct_rev(region))) + 
+    geom_histogram(bins = n.bin, position = "fill") + 
+    scale_fill_manual(values = rev(region.pal)) +
+    scale_y_continuous(label = scales::percent,  expand = c(0,0), name = "Percentage of cells") +
+    scale_x_continuous(expand = c(0,0), name = "Pseudotime")  + 
+    labs(title = "CGE-VIP/RELN Lineage") + 
+    theme(plot.title = element_text(family = "Arial", face = "bold", hjust = 0.5), legend.title = element_blank())
+
+h = ggplot(inter.exp_step3@meta.data %>% filter(CGE.LAMP5_lin == "CGE-LAMP5"), aes(pseudotime, fill = fct_rev(region))) + 
+    geom_histogram(bins = n.bin, position = "fill") + 
+    scale_fill_manual(values = rev(region.pal)) +
+    scale_y_continuous(label = scales::percent,  expand = c(0,0), name = "Percentage of cells") +
+    scale_x_continuous(expand = c(0,0), name = "Pseudotime")  + 
+    labs(title = "CGE-LAMP5 Lineage") + 
+    theme(plot.title = element_text(family = "Arial", face = "bold", hjust = 0.5), legend.title = element_blank())
+
+i = ggplot(inter.exp_step3@meta.data %>% filter(MGE.LAMP5_lin == "MGE-LAMP5"), aes(pseudotime, fill = fct_rev(region))) +
+    geom_histogram(bins = n.bin, position = "fill") + 
+    scale_fill_manual(values = rev(region.pal)) +
+    scale_y_continuous(label = scales::percent,  expand = c(0,0), name = "Percentage of cells") +
+    scale_x_continuous(expand = c(0,0), name = "Pseudotime")  + 
+    labs(title = "MGE-LAMP5 Lineage") + 
+    theme(plot.title = element_text(family = "Arial", face = "bold", hjust = 0.5), legend.title = element_blank())
+
+j = ggplot(inter.exp_step3@meta.data %>% filter(MGE.CHAND_lin == "MGE-Chandelier"), aes(pseudotime, fill = fct_rev(region))) +
+    geom_histogram(bins = n.bin, position = "fill") + 
+    scale_fill_manual(values = rev(region.pal)) +
+    scale_y_continuous(label = scales::percent,  expand = c(0,0), name = "Percentage of cells") +
+    scale_x_continuous(expand = c(0,0), name = "Pseudotime")  + 
+    labs(title = "MGE-Chandelier Lineage") + 
+    theme(plot.title = element_text(family = "Arial", face = "bold", hjust = 0.5), legend.title = element_blank())
+
+k = ggplot(inter.exp_step3@meta.data %>% filter(MGE.SST_lin == "MGE-SST"), aes(pseudotime, fill = fct_rev(region)))+
+    geom_histogram(bins = n.bin, position = "fill") + 
+    scale_fill_manual(values = rev(region.pal)) +
+    scale_y_continuous(label = scales::percent,  expand = c(0,0), name = "Percentage of cells") +
+    scale_x_continuous(expand = c(0,0), name = "Pseudotime")  + 
+    labs(title = "MGE-SST/PVALB Lineage") + 
+    theme(plot.title = element_text(family = "Arial", face = "bold", hjust = 0.5), legend.title = element_blank())
+
+l = ggplot(inter.exp_step3@meta.data %>% filter(MGE.PVALB_lin == "MGE-PVALB"), aes(pseudotime, fill = fct_rev(region)))+
+    geom_histogram(bins = n.bin, position = "fill") + 
+    scale_fill_manual(values = rev(region.pal)) +
+    scale_y_continuous(label = scales::percent,  expand = c(0,0), name = "Percentage of cells") +
+    scale_x_continuous(expand = c(0,0), name = "Pseudotime")  + 
+    labs(title = "MGE-SST/PVALB Lineage") + 
+    theme(plot.title = element_text(family = "Arial", face = "bold", hjust = 0.5), legend.title = element_blank())
+    
+(g+h+i+j+k+l & theme(plot.title = element_text(family = "Arial", hjust = 0.5), legend.position = "none")) + plot_layout(nrow = 1)
+ggsave("inter.exp_pseudotime_lineagecomposition.png", width = 16, height = 2.5, dpi = 600)
+```
+
+#Breakdown of lineages for cells in the EC stream
+```{r}
+ec.stream.lineage.data = data %>% filter(sample == "EC Stream") %>% select(ends_with("_lin"))
+
+extract_single_non_na <- function(row) {
+  non_na_values <- row[!is.na(row)]
+  if (length(non_na_values) == 1) {
+    return(non_na_values)
+  } else {
+    return(NA)
+  }
+}
+
+# Apply the function to each row
+ec.stream.lineage.data$lineage <- apply(ec.stream.lineage.data, 1, extract_single_non_na)
+lineage.order = ec.stream.lineage.data%>% group_by(lineage) %>% summarize(n = n())  %>% drop_na() %>% arrange(-n) %>% pull(lineage)
+ec.stream.lineage.data$lineage[is.na(ec.stream.lineage.data$lineage)] = "Overlapping Trajectories"
+ec.stream.lineage.data$lineage = factor(ec.stream.lineage.data$lineage, levels = c(lineage.order, "Overlapping Trajectories"))
+
+
+ec.stream.lineage.data %>% 
+  ggplot(aes(x = "a", fill = lineage)) + 
+  geom_bar() + 
+  scale_y_continuous(expand = c(0,0)) + 
+  scale_fill_manual(name = "Lineage", 
+                    values = c("#9370DB",  "#556B2F", "#48D1CC",  "#4169E1",  "#32CD32", "#FF8C00","grey85")) + 
+  labs(y = "Count") + 
+  theme_classic() +
+  theme(axis.title.x = element_blank(), 
+        axis.text.x = element_blank(), 
+        axis.ticks.x = element_blank()) 
+  
+ggsave("ecstream_lineage_composition.png", width = 4, height = 4.5)
+```
+
+```{r}
+sessionInfo()
+```
+

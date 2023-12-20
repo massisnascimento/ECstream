@@ -1,0 +1,319 @@
+---
+title: "Analyzing CGE-derived LAMP5+ cells"
+author: "Marcos Nascimento"
+date: "`r Sys.Date()`"
+output: html_notebook
+---
+```{r Setup}
+library(tidyverse)
+library(Seurat)
+library(viridis)
+library(patchwork)
+library(DropletUtils)
+library(future)
+library(purrr)
+library(tibble)
+library(ComplexHeatmap)
+library(openxlsx)
+library(edgeR)
+library(ggrepel)
+library(scales)
+library(circlize)
+
+#Colorscales
+library(MetBrewer)
+library(NatParksPalettes)
+library(RColorBrewer)
+
+plan("multicore", workers = 80)
+options(future.globals.maxSize = 30*1024^3) #30gb
+
+mytheme =   theme_minimal() + 
+  theme(axis.line = element_line(),
+        axis.ticks = element_line(),
+        text = element_text(family = "Helvetica"))
+
+simple = NoAxes() + NoLegend()
+
+mysc = scale_color_viridis(option = "A")
+region.pal = c("#5EBFA2", "#F69663", "#731DD8",  "#FB7C7E")
+lamp5.layers.pal = c("#FF7F0E", "#BF2772", "#4575b4")
+```
+
+#Loading data
+```{r}
+inter.exp_step3 = readRDS("../4.monocle/inter.exp_step3.rds")
+load("protein_coding_genes.Rdata")
+```
+
+
+# Subsetting CGE-derived LAMP5+ cells
+```{r}
+Idents(inter.exp_step3) = "inter_type"
+lamp5.exp = subset(inter.exp_step3, 
+                   idents = c("Immature Interneurons - CGE 2", "Lamp5"))
+
+(DimPlot(lamp5.exp, group.by = "region", shuffle = T) + scale_color_manual(values = region.pal)) + 
+(DimPlot(lamp5.exp, group.by = "spatialref.predicted.id_L3", shuffle = T) ) + 
+(DimPlot(lamp5.exp, group.by = "RNA_snn_res.0.5", shuffle = T, label = T) + NoLegend()) & NoAxes() & coord_fixed() 
+
+```
+
+```{r}
+lamp5.exp@meta.data = lamp5.exp@meta.data %>% 
+  mutate(inter_type2 = ifelse(spatialref.predicted.id_L3  == "iLAMP5.1", "Superficial layer Lamp5+ neurons", 
+                       ifelse(spatialref.predicted.id_L3 == "iLAMP5.3", "Deep layer Lamp5+ neurons", inter_type))) %>% 
+  mutate(inter_type2 = ifelse(inter_type == "Immature Interneurons - CGE 2", as.character(inter_type), inter_type2)) %>% 
+  mutate(inter_type2 = factor(inter_type2, levels = c("Immature Interneurons - CGE 2", "Deep layer Lamp5+ neurons", "Superficial layer Lamp5+ neurons")))
+
+p1 <- DimPlot(lamp5.exp, group.by = "region", shuffle = T) + scale_color_manual(values = region.pal) 
+p2 <- DimPlot(lamp5.exp, group.by = "age", shuffle = T) + scale_color_viridis_d(option = "H")
+p3 <- DimPlot(lamp5.exp, group.by = "spatialref.predicted.id_L3", shuffle = T)
+p4 <- DimPlot(lamp5.exp, group.by = "RNA_snn_res.0.5", shuffle = T) + scale_color_manual(values = c("#BD3108", "#D97011", "#E18812", "#EEBE0E", "#8FA471", "#C3D6CE", "#A5BDC4", "#89A6BB", "#454B87"))
+p5 <- DimPlot(lamp5.exp, group.by = "inter_type", shuffle = T) + scale_color_manual(values = c("#FF7F0E", "#9467BD"))
+p6 <- DimPlot(lamp5.exp, group.by = "inter_type2", shuffle = T) + scale_color_manual(values = lamp5.layers.pal)
+
+inter.exp_step3@meta.data = inter.exp_step3@meta.data %>% 
+                                    merge(lamp5.exp@meta.data %>% select(inter_type2), by = 0, all.x = T) %>% 
+                                    column_to_rownames("Row.names") 
+
+DimPlot(inter.exp_step3, group.by = "inter_type2", shuffle = T) + scale_color_manual(values = lamp5.layers.pal, na.value = "grey90") + simple + coord_fixed()
+
+lamp5.exp_plots = list(p1, p2, p3, p4, p5, p6)
+wrap_plots(lamp5.exp_plots) & 
+  NoAxes() & 
+  coord_fixed()
+```
+
+### DE tests
+
+Checking the expression of DE genes between upper and deeper layer lamp5 neurons. I decided to look for differentially expressed genes between upper layer LAMP5+ neurons (RELN+/NDNF+) and deeper layer neurons (KIT+). I compared only cells in the postnatal EC (excluding the EC stream) to look into the genes that are DE in the postnatal brain. Since I am only interested in looking for genes differentially expressed between these mature identities, I will account for variability between donors, using pseudobulk counts for each donor as individual replicates for the expression of each cluster:
+
+edgeR QLF test
+```{r}
+Idents(lamp5.exp) = "inter_type2"
+
+y <- Seurat2PB(lamp5.exp %>% subset(idents = c("Superficial layer Lamp5+ neurons", "Deep layer Lamp5+ neurons")), sample="donor", cluster="inter_type2")
+
+## Filtering pseudobulk samples and normalization
+
+summary(y$samples$lib.size)
+quantile(y$samples$lib.size, probs = 0.225)
+keep.samples <- y$samples$lib.size > 4e4
+y <- y[, keep.samples]
+
+#Filtering out lowly expressed genes.
+
+keep.genes <- filterByExpr(y, group=y$samples$cluster, min.count=10, min.total.count=20)
+y <- y[keep.genes, , keep=FALSE]
+
+#TMM normalization is performed to estimate effective library sizes.
+
+y <- normLibSizes(y)
+summary(y$samples$norm.factors)
+
+
+## Design Matrix
+#To perform differential expression analysis between cell clusters, we create a design matrix using both cluster and donor information.
+cluster <- as.factor(y$samples$cluster)
+donor <- factor(y$samples$sample)
+design <- model.matrix(~ cluster + donor)
+colnames(design) <- gsub("donor", "", colnames(design))
+colnames(design)[1] <- "Int"
+
+## Dispersion estimation
+#The NB dispersion can be estimated using the estimateDisp function and visualized with plotBCV.
+
+y <- estimateDisp(y, design, robust=TRUE)
+
+
+#Note that only the trended dispersion is used under the quasi-likelihood (QL) pipeline. The tagwise and common estimates are shown here but will not be used further.
+#The QL dispersions can be estimated using the glmQLFit function and visualized with plotQLDisp.
+
+fit <- glmQLFit(y, design, robust=TRUE)
+plotQLDisp(fit)
+
+
+
+## Marker genes identification
+# To confirm the identities of cell clusters, we perform differential expression analysis to identify marker genes of each cluster. In particular, 
+
+ncls <- nlevels(cluster)
+contr <- rbind( matrix(1/(1-ncls), ncls, ncls), matrix(0, ncol(design)-ncls, ncls) )
+diag(contr) <- 1
+contr[1,] <- 0
+rownames(contr) <- colnames(design)
+colnames(contr) <- paste0("Cluster_", levels(cluster))
+
+
+#We then perform quasi-likelihood F-test for each testing contrast. The results are stored as a list of DGELRT objects, one for each comparison.
+
+qlf <- list()
+for(i in 1:ncls){
+    qlf[[i]] <- glmQLFTest(fit, contrast=contr[,i])
+    qlf[[i]]$comparison <- paste0(levels(cluster)[i], "_vs_others")
+    }
+
+saveRDS(qlf, "lamp5.exp_intertype2_pseudobulk_degenes.rds")
+```
+
+
+Volcano Plot
+
+```{r}
+labeled.genes = c("COL5A2", "NDNF", "RELN", "ROBO1", "CDH9", "RASGRF2", "CDH13", "CCK", "PRELID2", "PKP2")
+
+volcano.data = qlf[[2]]$table %>% rownames_to_column("gene") %>% 
+                                  mutate(logPValue = -log10(PValue),
+                                         label = ifelse(gene %in% labeled.genes, gene, NA),
+                                         layer = ifelse(logFC > 1 & logPValue > 2, "upper", 
+                                                 ifelse(logFC < -1 & logPValue > 2, "deeper", "not_significant")))
+
+volcano.data %>% 
+  ggplot(aes(logFC, logPValue, label = label, col = layer)) + 
+    geom_point(alpha = 0.7, size = 1) + 
+    scale_color_manual(values = c("#BF2772", "grey85", "#4575b4"), name = NULL, labels = c("Upregulated in deeper layer LAMP5+ neurons",
+                                                                                           "Not significant",
+                                                                                 "Upregulated in upper layer LAMP5+ neurons")) +
+    geom_text_repel(col = "black", fontface = 'italic',  max.overlaps = 20, force_pull = 0.01, force = 10#, xlim = c(-5, 5), ylim = c(0, 120)
+                    ) + 
+    labs(x = "log2 Fold Change", y = "-log10 P-value") + 
+    xlim(c(-6, 6)) +
+    theme_classic() + 
+    NoLegend()
+#ggsave("lamp5.layergenes_volcanoplot.pdf", width = 1, height = 0.8, scale = 3)
+```
+
+# Upper vs deeper combined gene expression
+```{r}
+#Using the genes with the largest FC between superficial and deep layers.
+superficial.layer.genes = qlf[[2]]$table %>% filter(logFC > 0) %>% arrange(-logFC) %>% rownames()
+deep.layer.genes = qlf[[2]]$table %>% filter(logFC < 0) %>% arrange(logFC) %>% rownames()
+
+n_genes = 10 # number of top de genes to use
+lamp5.genes.list = list(
+superficial_score = superficial.layer.genes[1:n_genes],
+deep_score = deep.layer.genes[1:n_genes])
+
+lamp5.exp@active.assay = "RNA"
+lamp5.exp = lamp5.exp %>% AddModuleScore(features = lamp5.genes.list)
+
+colnames(lamp5.exp@meta.data) = colnames(lamp5.exp@meta.data) %>%
+                                      gsub("Cluster1", "lamp5.1_score", .) %>% 
+                                      gsub("Cluster2", "lamp5.3_score", .)
+
+lamp5.exp$lamp5.1_score = rescale_mid(lamp5.exp$lamp5.1_score, to = c(0, 1), mid = 0.5)
+lamp5.exp$lamp5.3_score = rescale_mid(lamp5.exp$lamp5.3_score, to = c(0, 1), mid = 0.5)
+lamp5.exp@meta.data = lamp5.exp@meta.data %>% mutate(lamp5_score = lamp5.1_score - lamp5.3_score)
+```
+
+# Saving object
+```{r}
+saveRDS(lamp5.exp, "lamp5.exp.rds")
+```
+
+
+```{r}
+# Add a random order column and sort the data frame by the random order
+score.data = lamp5.exp@meta.data %>% mutate(order = sample(nrow(.))) %>% arrange(order)
+
+score.data %>% filter(is.na(stream_highlight)) %>% ggplot(aes(lamp5.3_score, lamp5.1_score)) + 
+  geom_point(col = "grey", alpha = 0.7, size = 0.3) +
+  geom_density_2d(col = "black", alpha = 0.4, bins = 10) + 
+  geom_point(data = score.data %>% filter(stream_highlight == "EC Stream"), col = region.pal[3], alpha = 0.7, size = 0.3) +
+  #geom_density_2d(data = score.data %>% filter(stream_highlight == "EC Stream"), col = region.pal[3], alpha = 0.4) + 
+  theme_classic() +
+  scale_color_manual(values = region.pal[3], name = NULL, na.value = "grey75") + 
+  labs(x = NULL, 
+       y = NULL) + 
+  scale_x_continuous(limits = c(NA,1)) +
+  scale_y_continuous(limits = c(NA,1)) +
+  NoLegend()
+ggsave("plots/upper_lower_density_plotby_ecstreamcells.pdf", width = 1, height = 0.8, scale = 2.2)
+
+score.data %>% ggplot(aes(lamp5.3_score, lamp5.1_score)) + 
+  geom_point(aes(col = inter_type2), alpha = 0.5, size = 0.3) + 
+  geom_density_2d(col = "black", alpha = 0.7, bins = 10) + 
+  theme_classic() +
+  scale_color_manual(values = lamp5.layers.pal, name = NULL) + 
+  labs(x = NULL,
+       y = NULL) + 
+  NoLegend()
+ggsave("plots/upper_lower_density_plot_by_intertype2.pdf", width = 1, height = 0.8, scale = 2.2)
+
+score.data %>% ggplot(aes(lamp5.3_score, lamp5.1_score)) + 
+  geom_point(aes(col = pseudotime), alpha = 0.5) + 
+  geom_density_2d(col = "black", alpha = 0.7) + 
+  theme_classic() +
+  scale_color_viridis(name = "Pseudotime") +
+    labs(x = NULL,
+       y = NULL) 
+
+ggsave("plots/upper_lower_density_plot_by_pseudotime.pdf", width = 4, height = 4)
+```
+
+
+### Heatmap
+```{r}
+gene.types = c("Upper Layer Genes","Deeper Layer Genes")
+
+hm.genes = c(superficial.layer.genes[1:25], deep.layer.genes[1:25])
+hm.cells = lamp5.exp@meta.data %>% filter(inter_type2 %in% c("Superficial layer Lamp5+ neurons", "Deep layer Lamp5+ neurons", "Immature Interneurons - CGE 2") &
+                                            region %in% c("Migratory Stream", "Postnatal EC")) %>% rownames() %>% sample(2000)
+hm.data = lamp5.exp@assays$RNA@scale.data %>% as.data.frame()
+hm.data = hm.data[hm.genes, hm.cells] %>% drop_na() %>% as.matrix()
+
+hm.meta = lamp5.exp@meta.data[hm.cells,c("inter_type2", "pseudotime",  "region", "age", "SCT_snn_res.1.5", "spatialref.predicted.id_L3")]
+
+age_colors = viridis::turbo(n = 11)
+names(age_colors) = levels(hm.meta$age)
+names(region.pal) = levels(hm.meta$region)
+
+pseudotime.colors = colorRamp2(seq(min(hm.meta$pseudotime), max(hm.meta$pseudotime), ((max(hm.meta$pseudotime)-min(hm.meta$pseudotime)))/10), 
+                               viridis(n = 11))
+
+cluster.cols = lamp5.layers.pal
+names(cluster.cols) = levels(hm.meta$inter_type2)
+
+cells.anno = columnAnnotation(Region = hm.meta$region,
+                              Cluster = hm.meta$inter_type2,
+                              #`Predicted ID` = hm.meta$spatialref.predicted.id_L3,
+                              Pseudotime = hm.meta$pseudotime,
+                              Age = hm.meta$age, 
+                              col = list(Region = region.pal,
+                                         Age = age_colors,
+                                         Pseudotime = pseudotime.colors,
+                                         Cluster = cluster.cols
+                                         ),
+                                    annotation_name_gp = gpar(fontface = "bold")
+                              )
+
+
+max = 4
+col_fun = colorRamp2(seq(-1*max, max, max/5), rev(brewer.pal(11, "RdBu")))
+
+hm = Heatmap(hm.data,
+        name = "Z-score",
+        show_column_names = F,
+        column_title = NULL,
+        cluster_rows = F,
+        #clustering_distance_columns = "euclidean",
+        col = col_fun,
+        top_annotation = cells.anno, 
+        #column_km = 3,
+        column_split = hm.meta %>% select(region, inter_type2),
+        column_order = hm.meta %>% arrange(pseudotime) %>% rownames(),
+        row_split = factor(rep(gene.types, each = 25), levels = gene.types),
+        #gap = unit(1.5, "mm"),
+        border = T,
+        row_names_gp = gpar(fontface = "italic"))
+png("lamp5.heatmap.png", width = 16, height = 10, units = "in", res = 600, #pointsize = 5
+    )
+hm
+dev.off()
+```
+
+```{r}
+sessionInfo()
+```
+
