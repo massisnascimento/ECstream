@@ -1,9 +1,11 @@
 ---
 title: "Merging samples"
-subtitle: "MANAAB + Franjic // SoupX/DoubletFinder/DropletQC Pipeline"
 author: "Marcos Nascimento"
-date: "`r Sys.Date()`"
-output: html_notebook
+date: "01/02/2024"
+output:
+  html_document:
+    df_print: paged
+subtitle: Nascimento + Franjic // SoupX/DoubletFinder/DropletQC Pipeline
 ---
 ```{r Setup}
 # Loading necessary libraries
@@ -15,6 +17,7 @@ library(DropletUtils)
 library(future)
 library(tibble)
 library(ComplexHeatmap)
+library(GEOquery)
 
 # Additional color scales
 library(MetBrewer)
@@ -37,16 +40,62 @@ region.pal <- c("#5EBFA2", "#F69663", "#731DD8",  "#FB7C7E")
 # List of sex-specific genes
 sex.genes <- c("TTTY14", "NLGN4Y", "USP9Y", "UTY", "XIST", "RPS4X", "TMSB4X", "TSIX")
 
+#levels for some metadata categories:
+age.levels <- c("23GW", "14d", "33d", "54d", "2y", "3y", "13y", "27y", "50y", "51y", "79y")
+age.group.levels <- c("Fetal (23GW)", "Infant (14d-54d)", "Toddler (2y-3y)", "Teen (13y)", "Adult (27y-79y)")
+region.levels <- c("Germinal Zone", "Embryonic EC", "Migratory Stream", "Postnatal EC")
 ```
 
 #Creating seurat objects from count matrices 
-Count matrices are downloaded from GEO and saved in a folder named "matrices"
+Count matrices and metadata are downloaded from GEO and saved in a folder named "matrices".
 ```{r}
-samples <- c("CGE", "MGE", "LGE",  "EC Stream", "dEC", "H71", "H31", "H37", "hsb231", "hsb237", "hsb628", "H48", "H39", "H46","H29", "H33")
+load("gsm_samples.RData")
 
+dir.create("matrices")
+
+for (s in 1:nrow(gsm_samples)) {
+print(paste("Downloading count matrices. Sample", s, "of", nrow(gsm_samples)))
+    
+gsm_url <- paste0("https://www.ncbi.nlm.nih.gov/geo/download/?acc=", gsm_samples$gsm[s], "&format=file&file=", gsm_samples$gsm[s], "%5F", gsm_samples$samplenames[s])
+barcodes_url <- paste0(gsm_url, "%5Fbarcodes%2Etsv%2Egz")
+counts_url <- paste0(gsm_url, "%5Fcounts%2Emtx%2Egz")
+genes_url <- paste0(gsm_url, "%5Fgenes%2Etsv%2Egz")
+metadata_url <- paste0(gsm_url, "%5Fmetadata%2Ecsv%2Egz")
+
+download.file(barcodes_url, method = "curl", paste0("matrices/", gsm_samples$samplenames[s], "_barcodes.tsv.gz"))
+download.file(counts_url, method = "curl", paste0("matrices/", gsm_samples$samplenames[s], "_counts.mtx.gz"))
+download.file(genes_url, method = "curl", paste0("matrices/", gsm_samples$samplenames[s], "_genes.tsv.gz"))
+download.file(metadata_url, method = "curl",paste0("matrices/", gsm_samples$samplenames[s], "_metadata.csv.gz"))
+
+}
+
+# Extracting all .gz files
+
+gz_files <- dir("matrices", pattern = ".gz")
+for (f in gz_files) {
+  print(paste("Extracting file", match(f, gz_files), "of", length(gz_files)))
+  gunzip(paste0("matrices/", f), destname = paste0("matrices/", gsub(".gz", "", f)))
+  unlink(paste0("matrices/", f))
+}
+
+download.file("https://www.ncbi.nlm.nih.gov/geo/download/?acc=GSE199762&format=file&file=GSE199762%5Fsamples%5Ffrom%5FGSE186538%2Etar%2Egz", 
+              method = "curl", 
+              "matrices/franjic_et_al_samples.tar.gz")
+untar(tarfile = "matrices/franjic_et_al_samples.tar.gz", exdir = "matrices/")
+
+#moving files to the right folder
+files_to_move <- dir(path = "matrices/samples_from_GSE186538")
+for (f in files_to_move) {
+ file.rename(paste0("matrices/samples_from_GSE186538/", f) ,paste0("matrices/", f))
+}
+unlink("matrices/samples_from_GSE186538", recursive = T)
+unlink("matrices/franjic_et_al_samples.tar.gz")
+```
+
+```{r}
 srt_objects <- list()
 
-for (s in samples){
+for (s in c(gsm_samples$samplenames, "hsb231", "hsb237", "hsb628")) {
   cat(paste0("Importing sample ", s, "\n"))
   matrix <- ReadMtx(mtx = paste0("matrices/", s, "_counts.mtx"), 
                     features = paste0("matrices/", s, "_genes.tsv"), feature.column = 1, 
@@ -59,23 +108,27 @@ for (s in samples){
 Merging samples in a single Seurat object
 ```{r}
 all.exp = merge(srt_objects[[1]], srt_objects[-1])
+
+all.exp@meta.data$region = factor(all.exp@meta.data$region, region.levels)
+all.exp@meta.data$age = factor(all.exp@meta.data$age, levels = age.levels)
+all.exp@meta.data$age_group = factor(all.exp@meta.data$age_group, levels = age.group.levels)
 ```
 
 ## log Normalization
 ```{r}
-all.exp_raw@active.assay = "RNA"
-all.exp_raw = all.exp_raw %>% 
+all.exp@active.assay = "RNA"
+all.exp = all.exp %>% 
               NormalizeData(assay = "RNA", 
                             verbose = F) %>% 
               FindVariableFeatures() %>% 
               ScaleData()
   
-VariableFeatures(all.exp_raw@assays$RNA) = all.exp_raw@assays$RNA@var.features[!(all.exp_raw@assays$RNA@var.features %in% sex.genes)]
+VariableFeatures(all.exp@assays$RNA) = all.exp@assays$RNA@var.features[!(all.exp@assays$RNA@var.features %in% sex.genes)]
 
 
-all.exp_raw = all.exp_raw %>% RunPCA(npcs = 50)
+all.exp = all.exp %>% RunPCA(npcs = 50)
 
-all.exp_raw = all.exp_raw %>% 
+all.exp = all.exp %>% 
                   RunUMAP(dims = 1:22) %>% 
                   FindNeighbors(dims = 1:22) %>%
                   FindClusters(resolution = c(0.8, seq(0.5, 2, 0.5)))
@@ -102,7 +155,7 @@ DimPlot(all.exp, raster = F, label = T, repel = T, group.by = "all.exp_type", sh
   labs(title = "Cell Types")
 ```
 
-Unsupervised Clutering
+Unsupervised Clustering
 ```{r}
 DimPlot(all.exp, raster = F, label = T, group.by = "RNA_snn_res.1", shuffle = T) + 
   coord_fixed() + 
@@ -161,7 +214,7 @@ Nuclear Fraction
 FeaturePlot(all.exp, "nuclear_fraction", order = T, raster = F) +
   scale_color_viridis(limits = c(0, 1), name = "Nuclear Fraction") +
   coord_fixed() +
-  NoAxes()+
+  NoAxes() +
   labs(title = NULL)
 ```
 
@@ -179,16 +232,23 @@ inter.exp.cells = all.exp@meta.data %>% filter(all.exp_type == "Cortical Interne
 DimPlot(all.exp, label = T, cells.highlight = inter.exp.cells, raster = F) + simple + coord_fixed()
 
 inter.exp = subset(all.exp, cells = inter.exp.cells)
+
+load("reorder_index.Rdata") # load the index for reordering the cells. In addition to using the same seed (42, the default one in Seurat), in order to reproduce the exact same PCA results and UMAP projection, our count matrices should be in the same order as the original ones. For the sake of reproducibility, we will reorder the cells.
+
+inter.exp@assays$RNA@counts <- inter.exp@assays$RNA@counts[ , reorder_index]
+inter.exp@assays$RNA@data <- inter.exp@assays$RNA@data[ , reorder_index]
 ```
 
 ## logNormalization
 ```{r}
+inter.exp@active.assay = "RNA"
+
 inter.exp = inter.exp %>% 
               NormalizeData(assay = "RNA", 
                             verbose = F) %>% 
               FindVariableFeatures() %>% 
               ScaleData(features = rownames(.))
-  
+
 VariableFeatures(inter.exp@assays$RNA) = inter.exp@assays$RNA@var.features[!(inter.exp@assays$RNA@var.features %in% sex.genes)]
 
 inter.exp@active.assay = "RNA"

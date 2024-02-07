@@ -26,7 +26,9 @@
 #Large files
 *.rds
 *.rda
+/1.merging/matrices
 /3.label_transfer/external_data
+/5.wgcna/*-Block1.RData
 
 #other output files
 *.png
